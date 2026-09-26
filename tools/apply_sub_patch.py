@@ -10,7 +10,8 @@ import sys, re
 NEW_PRINT = r'''print_links_grouped(){
   load_env || true; load_creds || true; load_ports || true
   build_links "${1:-4}" || return 1
-  local host="$PUB_HOST" ip="$PUB_IP" l
+  local host="$PUB_HOST" ip="$PUB_IP" l sbase
+  sbase="$(sub_base "$ip")"
   echo -e "${C_BLUE}${C_BOLD}分享链接（20 个）${C_RESET}"
   hr
   echo -e "${C_CYAN}${C_BOLD}【直连节点（10）】${C_RESET}（vless-reality / vless-grpc-reality / trojan-reality / vmess-ws / hy2 / hy2-obfs / ss2022 / ss / tuic / anytls）"
@@ -21,10 +22,10 @@ NEW_PRINT = r'''print_links_grouped(){
   for l in "${LINKS_WARP[@]}"; do echo "  $l"; done
   hr
   echo -e "${C_MAGENTA}${C_BOLD}📦 一条链接导入全部 20 个节点（聚合订阅）${C_RESET}"
-  echo -e "  Clash/Mihomo 订阅 : http://${ip}:${SUB_PORT}/clash"
-  echo -e "  sing-box 订阅     : http://${ip}:${SUB_PORT}/singbox"
-  echo -e "  通用聚合(base64)  : http://${ip}:${SUB_PORT}/all"
-  echo -e "  聚合页(全部链接)  : http://${ip}:${SUB_PORT}/"
+  echo -e "  Clash/Mihomo 订阅 : ${sbase}/clash"
+  echo -e "  sing-box 订阅     : ${sbase}/singbox"
+  echo -e "  通用聚合(base64)  : ${sbase}/all"
+  echo -e "  聚合页(全部链接)  : ${sbase}/"
   echo -e "${C_DIM}  订阅服务未启动？主菜单选 7) 订阅链接 一键启动${C_RESET}"
   hr
   echo -e "${C_YELLOW}📌 如果你使用 v2rayN/Xray-core v26.2.6+，hysteria2 节点的 allowInsecure 已被移除，${C_RESET}"

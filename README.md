@@ -12,7 +12,8 @@
 | 📦 通用聚合订阅 | `http://IP:2088/all` — 全部 20 条链接的 base64（v2rayN / 小火箭 / Shadowrocket 直接导入） |
 | 🖥 聚合页 | `http://IP:2088/` — 一个页面列出全部 20 条链接 + 三个订阅地址，点一下复制 |
 | 🧷 分组订阅 | `/direct`（仅直连 10）、`/warp`（仅 WARP 10）、`/links.txt`（明文） |
-| ⚙️ 订阅服务 | 内置 systemd 托管静态服务（python3 优先，busybox 兜底），默认端口 **2088**，可在菜单里改 |
+| 🔐 访问控制 | HTTP Basic 账号密码 + 随机密钥路径（默认开启，链接形如 `http://gavin:密码@IP:2088/<随机token>/clash`）|
+| ⚙️ 订阅服务 | 内置 systemd 托管服务（python3），默认端口 **2088**，菜单里可改端口/账号/密钥路径 |
 | 🔄 自动同步 | 安装完成 / 一键换端口后，订阅自动重新生成 |
 
 > 上游原有的 20 个节点（直连 10 + WARP 10：VLESS Reality / VLESS gRPC Reality / Trojan Reality /
@@ -45,16 +46,34 @@ chmod +x sing-box-plus.sh && bash sing-box-plus.sh
  0) 退出
 ```
 
-进入 `7)` 可：重新生成订阅 / 查看订阅链接 / 启动·重启·停止订阅服务 / 修改订阅端口。
+进入 `7)` 可：重新生成订阅 / 查看订阅链接 / 启动·重启·停止订阅服务 / 修改订阅端口 / 修改账号密码 / 重置密钥路径。
 
 > ⚠️ 记得把订阅端口（默认 2088/TCP）放行到云厂商「安全组」——脚本只能放行系统防火墙。
 
+## 🔐 访问控制（默认开启）
+
+订阅服务自带两层门，防止链接被人撞到/泄露后白嫖：
+
+1. **HTTP Basic 账号密码**：默认用户名 `gavin`，密码在首次安装时随机生成；未带凭据一律 `401`。
+2. **随机密钥路径**：所有订阅挂在 `http://IP:端口/<随机token>/...` 下，根路径直接 `404`，扫不到。
+
+最终链接形如（客户端直接整条粘贴即可）：
+
+```
+http://gavin:密码@IP:2088/<token>/clash      # Clash / Mihomo
+http://gavin:密码@IP:2088/<token>/singbox   # sing-box
+http://gavin:密码@IP:2088/<token>/all       # v2rayN / 小火箭
+```
+
+> 账号/密码/密钥路径存在 `/opt/sing-box/sub.env`，随时可在 `7) 订阅链接` 菜单里改（改了需到各客户端更新订阅地址）。
+> ⚠️ 链接本身就含密码，谁拿到谁能用——请勿外发；如需更稳，建议后面挂反代上 TLS。
+
 ## 客户端导入
 
-- **Clash / Mihomo**（Clash Verge、Mihomo Party、OpenClash…）：订阅地址填 `http://IP:2088/clash`
-- **sing-box**（SFA / SFI / SFM / Hiddify…）：填 `http://IP:2088/singbox`
-- **v2rayN / 小火箭 / Shadowrocket / v2rayNG**：填 `http://IP:2088/all`
-- 想手动挑节点：打开 `http://IP:2088/` 逐个复制
+- **Clash / Mihomo**（Clash Verge、Mihomo Party、OpenClash…）：订阅地址填 `http://gavin:密码@IP:2088/<token>/clash`
+- **sing-box**（SFA / SFI / SFM / Hiddify…）：填 `http://gavin:密码@IP:2088/<token>/singbox`
+- **v2rayN / 小火箭 / Shadowrocket / v2rayNG**：填 `http://gavin:密码@IP:2088/<token>/all`
+- 想手动挑节点：打开 `http://gavin:密码@IP:2088/<token>/` 逐个复制（浏览器会弹登录框）
 
 ## 与上游保持同步
 
@@ -79,14 +98,12 @@ bash tools/selftest.sh
 
 - Clash 订阅里 `GEOIP,CN,DIRECT` 需要客户端有 geoip 数据（mihomo 会自动下载；国内网络建议配好代理后再拉）。
 - Hysteria2 / TUIC 用自签证书 → 订阅里默认 `skip-cert-verify: true`（与上游分享链接的 `insecure=1` 一致）。
-- 订阅服务是**明文 HTTP**。公网裸奔的订阅地址 = 谁拿到谁用，建议：
-  1. 改个不显眼的端口；2. 或在前面挂 Nginx/Caddy 加路径密钥与 TLS。
-  （后续可加 `?token=` 校验，见 Roadmap）
+- 订阅服务已内置 **Basic 认证 + 随机密钥路径**；若仍不放心，可再挂 Nginx/Caddy 加 TLS（见 Roadmap）。
 - 端口 2088 仅用于**拉订阅**，与 20 个节点端口无冲突。
 
 ## Roadmap
 
-- [ ] 订阅路径 token 校验（`/clash?t=xxxx`）
+- [x] 订阅路径 token 校验 + Basic 认证（已落地）
 - [ ] 订阅服务可选 HTTPS（Caddy 自动证书）
 - [ ] 支持 Clash `rule-providers`（按需下载规则集，省内存）
 - [ ] 换端口时自动同步 Cloudflare / 云安全组（API）

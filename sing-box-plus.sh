@@ -1110,7 +1110,8 @@ open_firewall(){
 print_links_grouped(){
   load_env || true; load_creds || true; load_ports || true
   build_links "${1:-4}" || return 1
-  local host="$PUB_HOST" ip="$PUB_IP" l
+  local host="$PUB_HOST" ip="$PUB_IP" l sbase
+  sbase="$(sub_base "$ip")"
   echo -e "${C_BLUE}${C_BOLD}分享链接（20 个）${C_RESET}"
   hr
   echo -e "${C_CYAN}${C_BOLD}【直连节点（10）】${C_RESET}（vless-reality / vless-grpc-reality / trojan-reality / vmess-ws / hy2 / hy2-obfs / ss2022 / ss / tuic / anytls）"
@@ -1121,10 +1122,10 @@ print_links_grouped(){
   for l in "${LINKS_WARP[@]}"; do echo "  $l"; done
   hr
   echo -e "${C_MAGENTA}${C_BOLD}📦 一条链接导入全部 20 个节点（聚合订阅）${C_RESET}"
-  echo -e "  Clash/Mihomo 订阅 : http://${ip}:${SUB_PORT}/clash"
-  echo -e "  sing-box 订阅     : http://${ip}:${SUB_PORT}/singbox"
-  echo -e "  通用聚合(base64)  : http://${ip}:${SUB_PORT}/all"
-  echo -e "  聚合页(全部链接)  : http://${ip}:${SUB_PORT}/"
+  echo -e "  Clash/Mihomo 订阅 : ${sbase}/clash"
+  echo -e "  sing-box 订阅     : ${sbase}/singbox"
+  echo -e "  通用聚合(base64)  : ${sbase}/all"
+  echo -e "  聚合页(全部链接)  : ${sbase}/"
   echo -e "${C_DIM}  订阅服务未启动？主菜单选 7) 订阅链接 一键启动${C_RESET}"
   hr
   echo -e "${C_YELLOW}📌 如果你使用 v2rayN/Xray-core v26.2.6+，hysteria2 节点的 allowInsecure 已被移除，${C_RESET}"
@@ -1247,6 +1248,42 @@ safe_source_env "$SB_DIR/sub.env" 2>/dev/null || true
 SUB_DIR=${SUB_DIR:-$SB_DIR/sub}
 SUB_PORT=${SUB_PORT:-2088}
 SUB_SERVICE=${SUB_SERVICE:-sbp-sub.service}
+SUB_USER=${SUB_USER:-}
+SUB_PASS=${SUB_PASS:-}
+SUB_PATH=${SUB_PATH:-}
+
+# ---- 订阅访问凭据 / 密钥路径 ----
+rand_hex(){ if command -v openssl >/dev/null 2>&1; then openssl rand -hex "$1"; else head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; fi; }
+gen_sub_pass(){ tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16; }
+gen_sub_path(){ rand_hex 16; }
+
+# 带凭据+密钥路径的订阅根地址（未配置凭据时退回裸地址）
+sub_base(){
+  local host="${1:-$PUB_IP}"
+  if [[ -z "$SUB_USER" && -f "$SB_DIR/sub.env" ]]; then safe_source_env "$SB_DIR/sub.env" 2>/dev/null || true; fi
+  if [[ -n "$SUB_USER" ]]; then
+    printf 'http://%s:%s@%s:%s/%s' "$SUB_USER" "$SUB_PASS" "$host" "$SUB_PORT" "$SUB_PATH"
+  else
+    printf 'http://%s:%s' "$host" "$SUB_PORT"
+  fi
+}
+
+write_sub_env(){
+  mkdir -p "$SB_DIR"
+  local tmp; tmp="$(mktemp "${SB_DIR}/sub.env.XXXXXX")"
+  { { [[ -f "$SB_DIR/sub.env" ]] && grep -v -E '^(SUB_PORT|SUB_USER|SUB_PASS|SUB_PATH)=' "$SB_DIR/sub.env" || true; } \
+    ; printf 'SUB_PORT=%s\nSUB_USER=%s\nSUB_PASS=%s\nSUB_PATH=%s\n' "$SUB_PORT" "$SUB_USER" "$SUB_PASS" "$SUB_PATH"; } > "$tmp"
+  mv "$tmp" "$SB_DIR/sub.env"
+}
+
+ensure_sub_secrets(){
+  local changed=0
+  [[ -n "$SUB_USER" ]] || { SUB_USER="gavin"; changed=1; }
+  [[ -n "$SUB_PASS" ]] || { SUB_PASS="$(gen_sub_pass)"; changed=1; }
+  [[ -n "$SUB_PATH" ]] || { SUB_PATH="$(gen_sub_path)"; changed=1; }
+  [[ "$changed" == "1" ]] && write_sub_env
+  return 0
+}
 
 # ---- 统一构建 20 个节点链接（分享 & 聚合订阅复用） ----
 PUB_MODE=""; PUB_IP=""; PUB_HOST=""
@@ -1505,7 +1542,9 @@ gen_all_sub(){
   b64enc < "$SUB_DIR/direct.txt" > "$SUB_DIR/direct"
   b64enc < "$SUB_DIR/warp.txt" > "$SUB_DIR/warp"
 
-  local host="$PUB_IP" base="http://${PUB_IP}:${SUB_PORT}" i=1 n
+  ensure_sub_secrets
+  local host="$PUB_IP" base i=1 n
+  base="$(sub_base)"
   {
     cat <<EOF
 <!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -1559,6 +1598,7 @@ EOF
 
 gen_subs(){
   build_links "${1:-4}" || return 1
+  ensure_sub_secrets
   gen_clash_sub || true
   gen_singbox_sub || true
   gen_all_sub "${1:-4}" || true
@@ -1567,21 +1607,104 @@ gen_subs(){
 # ---- 订阅 HTTP 服务 ----
 write_sub_server(){
   mkdir -p "$SUB_DIR"
-  cat > "$SB_DIR/sub-server.sh" <<'EOS'
-#!/usr/bin/env bash
-# Sing-Box-Plus 订阅静态服务
-SUB_DIR="${SUB_DIR:-/opt/sing-box/sub}"
-SUB_PORT="${SUB_PORT:-2088}"
-if command -v python3 >/dev/null 2>&1; then
-  exec python3 -m http.server "$SUB_PORT" --bind 0.0.0.0 --directory "$SUB_DIR"
-elif command -v busybox >/dev/null 2>&1; then
-  exec busybox httpd -f -p "$SUB_PORT" -h "$SUB_DIR"
-else
-  echo "缺少 python3 / busybox，无法启动订阅服务" >&2
-  exit 1
-fi
+  cat > "$SB_DIR/sub-server.py" <<'EOS'
+#!/usr/bin/env python3
+# Sing-Box-Plus 订阅服务：HTTP Basic 认证 + 密钥路径 + 短链接别名（/clash、/singbox）
+import os, sys, base64
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+SUB_DIR  = os.environ.get('SUB_DIR', '/opt/sing-box/sub')
+SUB_PORT = int(os.environ.get('SUB_PORT', '2088'))
+SUB_USER = os.environ.get('SUB_USER', '')
+SUB_PASS = os.environ.get('SUB_PASS', '')
+SUB_PATH = os.environ.get('SUB_PATH', '').strip('/')
+ALIAS = {'clash': 'clash.yaml', 'singbox': 'singbox.json'}
+
+class Handler(SimpleHTTPRequestHandler):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, directory=SUB_DIR, **kw)
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write('%s - [%s] %s\n' % (self.address_string(), self.log_date_time_string(), fmt % args))
+
+    def _authed(self):
+        if not SUB_USER and not SUB_PASS:
+            return True
+        h = self.headers.get('Authorization', '')
+        if not h.startswith('Basic '):
+            return False
+        try:
+            raw = base64.b64decode(h[6:].strip()).decode('utf-8')
+        except Exception:
+            return False
+        u, _, p = raw.partition(':')
+        return u == SUB_USER and p == SUB_PASS
+
+    def _gate(self):
+        if self._authed():
+            return True
+        self.send_response(401)
+        self.send_header('WWW-Authenticate', 'Basic realm="sub"')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+        return False
+
+    def _rewrite(self):
+        path = self.path.split('?', 1)[0]
+        if SUB_PATH:
+            if path == '/' + SUB_PATH or path == '/' + SUB_PATH + '/':
+                path = '/'
+            elif path.startswith('/' + SUB_PATH + '/'):
+                path = path[len(SUB_PATH) + 1:]
+            else:
+                return None
+        seg = path.lstrip('/')
+        if seg in ALIAS:
+            path = '/' + ALIAS[seg]
+        return path
+
+    def _prepare(self):
+        if not self._gate():
+            return False
+        new = self._rewrite()
+        if new is None:
+            self.send_error(404, 'Not Found')
+            return False
+        if new == '/' or new.endswith('/'):
+            new = '/index.html'
+        self.path = new
+        return True
+
+    def do_GET(self):
+        if self._prepare():
+            try:
+                super().do_GET()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    def do_HEAD(self):
+        if self._prepare():
+            try:
+                super().do_HEAD()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    def list_directory(self, path):
+        self.send_error(403, 'Forbidden')
+        return None
+
+if __name__ == '__main__':
+    if not os.path.isdir(SUB_DIR):
+        sys.stderr.write('SUB_DIR 不存在: %s\n' % SUB_DIR)
+        sys.exit(1)
+    srv = ThreadingHTTPServer(('0.0.0.0', SUB_PORT), Handler)
+    sys.stderr.write('订阅服务已启动: 0.0.0.0:%d  路径前缀=/%s  认证=%s\n' % (SUB_PORT, SUB_PATH, 'on' if SUB_USER else 'off'))
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
 EOS
-  chmod +x "$SB_DIR/sub-server.sh"
+  chmod +x "$SB_DIR/sub-server.py"
 
   cat > "/etc/systemd/system/${SUB_SERVICE}" <<EOS
 [Unit]
@@ -1592,7 +1715,10 @@ After=network.target
 Type=simple
 Environment=SUB_DIR=${SUB_DIR}
 Environment=SUB_PORT=${SUB_PORT}
-ExecStart=${SB_DIR}/sub-server.sh
+Environment=SUB_USER=${SUB_USER}
+Environment=SUB_PASS=${SUB_PASS}
+Environment=SUB_PATH=${SUB_PATH}
+ExecStart=/usr/bin/env python3 ${SB_DIR}/sub-server.py
 Restart=always
 RestartSec=3
 
@@ -1604,6 +1730,7 @@ EOS
 }
 
 serve_subs_start(){
+  ensure_sub_secrets
   write_sub_server
   systemctl restart "${SUB_SERVICE}" >/dev/null 2>&1 || true
   if systemctl is-active --quiet "${SUB_SERVICE}"; then ok "订阅服务已启动（端口 ${SUB_PORT}）"; else warn "订阅服务启动失败，请查看: journalctl -u ${SUB_SERVICE} -n 50"; fi
@@ -1630,8 +1757,9 @@ open_sub_firewall(){
 
 show_subs(){
   build_links 4 || return 1
+  ensure_sub_secrets
   local st; st=$(systemctl is-active "${SUB_SERVICE}" 2>/dev/null || echo inactive)
-  local base="http://${PUB_IP}:${SUB_PORT}"
+  local base; base="$(sub_base)"
   hr
   echo -e "${C_BLUE}${C_BOLD}📦 聚合订阅（一个链接包含全部 20 个节点）${C_RESET}"
   hr
@@ -1642,6 +1770,7 @@ show_subs(){
   echo -e "  ${C_DIM}仅直连: /direct   仅WARP: /warp   明文: /links.txt${C_RESET}"
   hr
   echo -e "  订阅服务状态: ${st}    端口: ${SUB_PORT}"
+  echo -e "  ${C_DIM}访问账号: ${SUB_USER:-未设置}   密钥路径: /${SUB_PATH:-无}${C_RESET}"
   hr
 }
 
@@ -1660,6 +1789,8 @@ sub_menu(){
     echo -e "  ${C_GREEN}3)${C_RESET} 启动/重启订阅服务"
     echo -e "  ${C_GREEN}4)${C_RESET} 停止订阅服务"
     echo -e "  ${C_GREEN}5)${C_RESET} 修改订阅端口"
+    echo -e "  ${C_GREEN}6)${C_RESET} 修改订阅账号密码"
+    echo -e "  ${C_GREEN}7)${C_RESET} 重置密钥路径（换新 token）"
     echo -e "  ${C_RED}0)${C_RESET} 返回主菜单"
     hr
     read -rp "选择: " sop || true
@@ -1670,9 +1801,17 @@ sub_menu(){
       4) serve_subs_stop; read -rp "回车返回..." _ || true ;;
       5) read -rp "新端口(1024-65535): " np || true
          if [[ "$np" =~ ^[0-9]+$ ]] && [ "$np" -ge 1024 ] && [ "$np" -le 65535 ]; then
-           { [[ -f "$SB_DIR/sub.env" ]] && grep -v '^SUB_PORT=' "$SB_DIR/sub.env" || true; printf 'SUB_PORT=%s\n' "$np"; } > "$SB_DIR/sub.env"
-           SUB_PORT="$np"; serve_subs_start; show_subs
+           SUB_PORT="$np"; write_sub_env; serve_subs_start; show_subs
          else warn "端口不合法"; fi
+         read -rp "回车返回..." _ || true ;;
+      6) read -rp "新账号(回车保留 ${SUB_USER:-gavin}): " nu || true
+         [[ -n "$nu" ]] && SUB_USER="$nu"
+         read -rsp "新密码(回车=随机生成): " npw || true; echo
+         if [[ -n "$npw" ]]; then SUB_PASS="$npw"; else SUB_PASS="$(gen_sub_pass)"; fi
+         write_sub_env; serve_subs_start; show_subs
+         read -rp "回车返回..." _ || true ;;
+      7) SUB_PATH="$(gen_sub_path)"; write_sub_env; serve_subs_start; show_subs
+         echo -e "  ${C_YELLOW}⚠ 密钥路径已更换，旧订阅链接失效，请到各客户端更新${C_RESET}"
          read -rp "回车返回..." _ || true ;;
       0) return 0 ;;
     esac
