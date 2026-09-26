@@ -18,12 +18,13 @@ gen_sub_user(){ printf 'u%s' "$(rand_hex 4)"; }
 
 # 带凭据+密钥路径的订阅根地址（未配置凭据时退回裸地址）
 sub_base(){
-  local host="${1:-$PUB_IP}"
+  local host="${1:-$PUB_IP}" scheme="http"
   if [[ -z "$SUB_USER" && -f "$SB_DIR/sub.env" ]]; then safe_source_env "$SB_DIR/sub.env" 2>/dev/null || true; fi
+  if tls_on; then host="$TLS_DOMAIN"; scheme="https"; fi
   if [[ -n "$SUB_USER" ]]; then
-    printf 'http://%s:%s@%s:%s/%s' "$SUB_USER" "$SUB_PASS" "$host" "$SUB_PORT" "$SUB_PATH"
+    printf '%s://%s:%s@%s:%s/%s' "$scheme" "$SUB_USER" "$SUB_PASS" "$host" "$SUB_PORT" "$SUB_PATH"
   else
-    printf 'http://%s:%s' "$host" "$SUB_PORT"
+    printf '%s://%s:%s' "$scheme" "$host" "$SUB_PORT"
   fi
 }
 
@@ -44,6 +45,54 @@ ensure_sub_secrets(){
   return 0
 }
 
+# ---- TLS（真证书）配置：默认关闭，配了才启用 ----
+safe_source_env "$SB_DIR/tls.env" 2>/dev/null || true
+TLS_DOMAIN=${TLS_DOMAIN:-}
+TLS_EMAIL=${TLS_EMAIL:-}
+TLS_CF_TOKEN=${TLS_CF_TOKEN:-}
+
+write_tls_env(){
+  mkdir -p "$SB_DIR"
+  local tmp; tmp="$(mktemp "${SB_DIR}/tls.env.XXXXXX")"
+  printf 'TLS_DOMAIN=%s\nTLS_EMAIL=%s\nTLS_CF_TOKEN=%s\n' "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_CF_TOKEN" > "$tmp"
+  mv "$tmp" "$SB_DIR/tls.env"; chmod 600 "$SB_DIR/tls.env" 2>/dev/null || true
+}
+
+# 真证书是否已就绪：域名非空 + 证书存在且 SAN 匹配域名
+tls_on(){
+  [[ -n "${TLS_DOMAIN:-}" ]] || return 1
+  [[ -s "$CERT_DIR/fullchain.pem" && -s "$CERT_DIR/key.pem" ]] || return 1
+  openssl x509 -in "$CERT_DIR/fullchain.pem" -noout -checkhost "$TLS_DOMAIN" >/dev/null 2>&1
+}
+tls_sni(){ if tls_on; then printf '%s' "$TLS_DOMAIN"; else printf '%s' "$REALITY_SERVER"; fi; }
+
+acme_install(){
+  local ac="$HOME/.acme.sh/acme.sh"
+  [[ -x "$ac" ]] && return 0
+  info "安装 acme.sh ..."
+  curl -fsS --max-time 60 https://get.acme.sh -o /tmp/acme_install.sh 2>/dev/null \
+    || curl -fsS --max-time 60 https://gh-proxy.com/https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o /tmp/acme_direct.sh 2>/dev/null \
+    || true
+  if [[ -s /tmp/acme_install.sh ]]; then sh /tmp/acme_install.sh email="$TLS_EMAIL" >/dev/null 2>&1 || true; fi
+  if [[ ! -x "$ac" && -s /tmp/acme_direct.sh ]]; then mkdir -p "$HOME/.acme.sh"; cp /tmp/acme_direct.sh "$ac"; chmod +x "$ac"; fi
+  [[ -x "$ac" ]] || { err "acme.sh 安装失败（检查网络）"; return 1; }
+}
+
+acme_issue(){
+  acme_install || return 1
+  local ac="$HOME/.acme.sh/acme.sh"
+  export CF_Token="$TLS_CF_TOKEN"
+  info "向 Let's Encrypt 申请证书：$TLS_DOMAIN （DNS-01，走 Cloudflare API，不占 80/443）"
+  "$ac" --issue --dns dns_cf -d "$TLS_DOMAIN" --keylength ec-256 --server letsencrypt || {
+    err "证书申请失败：请确认①域名已在 Cloudflare；②Token 权限为 Zone→DNS→Edit；③该子域存在"
+    return 1; }
+  "$ac" --install-cert -d "$TLS_DOMAIN" --ecc \
+    --key-file "$CERT_DIR/key.pem" --fullchain-file "$CERT_DIR/fullchain.pem" \
+    --reloadcmd "systemctl restart ${SUB_SERVICE} >/dev/null 2>&1 || true; systemctl restart ${SYSTEMD_SERVICE} >/dev/null 2>&1 || true" \
+    || { err "证书安装失败"; return 1; }
+  ok "证书已安装到 $CERT_DIR/ （acme.sh 已配自动续期+重载）"
+}
+
 # ---- 统一构建 20 个节点链接（分享 & 聚合订阅复用） ----
 PUB_MODE=""; PUB_IP=""; PUB_HOST=""
 LINKS_DIRECT=(); LINKS_WARP=(); LINKS_ALL=()
@@ -62,31 +111,34 @@ build_links(){
   host="$(fmt_host_for_uri "$ip")"
   PUB_MODE="$mode"; PUB_IP="$ip"; PUB_HOST="$host"
   LINKS_DIRECT=(); LINKS_WARP=(); LINKS_ALL=()
+  # TLS 真证书模式：hy2/tuic/anytls 改用域名 + 去 insecure
+  local TH="$host" TSNI="$REALITY_SERVER" TOPT="insecure=1&allowInsecure=1&" AOPT="insecure=1&"
+  if tls_on; then TH="$TLS_DOMAIN"; TSNI="$TLS_DOMAIN"; TOPT=""; AOPT=""; fi
   local VMESS_JSON VMESS_JSON_W
 
   LINKS_DIRECT+=("vless://${UUID}@${host}:${PORT_VLESSR}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${RS_VR}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#vless-reality")
   LINKS_DIRECT+=("vless://${UUID}@${host}:${PORT_VLESS_GRPCR}?encryption=none&security=reality&sni=${RS_GR}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=grpc&serviceName=${GRPC_SERVICE}#vless-grpc-reality")
   LINKS_DIRECT+=("trojan://${UUID}@${host}:${PORT_TROJANR}?security=reality&sni=${RS_TR}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#trojan-reality")
-  LINKS_DIRECT+=("hy2://$(urlenc "${HY2_PWD}")@${host}:${PORT_HY2}?insecure=1&allowInsecure=1&sni=${REALITY_SERVER}#hysteria2")
+  LINKS_DIRECT+=("hy2://$(urlenc "${HY2_PWD}")@${TH}:${PORT_HY2}?${TOPT}sni=${TSNI}#hysteria2")
   VMESS_JSON=$(printf '{"v":"2","ps":"vmess-ws","add":"%s","port":"%s","id":"%s","aid":"0","net":"ws","type":"none","host":"","path":"%s","tls":""}' "$ip" "$PORT_VMESS_WS" "$UUID" "$VMESS_WS_PATH")
   LINKS_DIRECT+=("vmess://$(printf "%s" "$VMESS_JSON" | b64enc)")
-  LINKS_DIRECT+=("hy2://$(urlenc "${HY2_PWD2}")@${host}:${PORT_HY2_OBFS}?insecure=1&allowInsecure=1&sni=${REALITY_SERVER}&alpn=h3&obfs=salamander&obfs-password=$(urlenc "${HY2_OBFS_PWD}")#hysteria2-obfs")
+  LINKS_DIRECT+=("hy2://$(urlenc "${HY2_PWD2}")@${TH}:${PORT_HY2_OBFS}?${TOPT}sni=${TSNI}&alpn=h3&obfs=salamander&obfs-password=$(urlenc "${HY2_OBFS_PWD}")#hysteria2-obfs")
   LINKS_DIRECT+=("ss://$(printf "%s" "2022-blake3-aes-256-gcm:${SS2022_KEY}" | b64enc)@${host}:${PORT_SS2022}#ss2022")
   LINKS_DIRECT+=("ss://$(printf "%s" "aes-256-gcm:${SS_PWD}" | b64enc)@${host}:${PORT_SS}#ss")
-  LINKS_DIRECT+=("tuic://${UUID}:$(urlenc "${UUID}")@${host}:${PORT_TUIC}?congestion_control=bbr&alpn=h3&insecure=1&allowInsecure=1&sni=${REALITY_SERVER}#tuic-v5")
-  LINKS_DIRECT+=("anytls://$(urlenc "${ANYTLS_PWD}")@${host}:${PORT_ANYTLS}?insecure=1&sni=${REALITY_SERVER}#anytls")
+  LINKS_DIRECT+=("tuic://${UUID}:$(urlenc "${UUID}")@${TH}:${PORT_TUIC}?congestion_control=bbr&alpn=h3&${TOPT}sni=${TSNI}#tuic-v5")
+  LINKS_DIRECT+=("anytls://$(urlenc "${ANYTLS_PWD}")@${TH}:${PORT_ANYTLS}?${AOPT}sni=${TSNI}#anytls")
 
   LINKS_WARP+=("vless://${UUID}@${host}:${PORT_VLESSR_W}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${RS_VRW}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#vless-reality-warp")
   LINKS_WARP+=("vless://${UUID}@${host}:${PORT_VLESS_GRPCR_W}?encryption=none&security=reality&sni=${RS_GRW}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=grpc&serviceName=${GRPC_SERVICE}#vless-grpc-reality-warp")
   LINKS_WARP+=("trojan://${UUID}@${host}:${PORT_TROJANR_W}?security=reality&sni=${RS_TRW}&fp=chrome&pbk=${REALITY_PUB}&sid=${REALITY_SID}&type=tcp#trojan-reality-warp")
-  LINKS_WARP+=("hy2://$(urlenc "${HY2_PWD}")@${host}:${PORT_HY2_W}?insecure=1&allowInsecure=1&sni=${REALITY_SERVER}#hysteria2-warp")
+  LINKS_WARP+=("hy2://$(urlenc "${HY2_PWD}")@${TH}:${PORT_HY2_W}?${TOPT}sni=${TSNI}#hysteria2-warp")
   VMESS_JSON_W=$(printf '{"v":"2","ps":"vmess-ws-warp","add":"%s","port":"%s","id":"%s","aid":"0","net":"ws","type":"none","host":"","path":"%s","tls":""}' "$ip" "$PORT_VMESS_WS_W" "$UUID" "$VMESS_WS_PATH")
   LINKS_WARP+=("vmess://$(printf "%s" "$VMESS_JSON_W" | b64enc)")
-  LINKS_WARP+=("hy2://$(urlenc "${HY2_PWD2}")@${host}:${PORT_HY2_OBFS_W}?insecure=1&allowInsecure=1&sni=${REALITY_SERVER}&alpn=h3&obfs=salamander&obfs-password=$(urlenc "${HY2_OBFS_PWD}")#hysteria2-obfs-warp")
+  LINKS_WARP+=("hy2://$(urlenc "${HY2_PWD2}")@${TH}:${PORT_HY2_OBFS_W}?${TOPT}sni=${TSNI}&alpn=h3&obfs=salamander&obfs-password=$(urlenc "${HY2_OBFS_PWD}")#hysteria2-obfs-warp")
   LINKS_WARP+=("ss://$(printf "%s" "2022-blake3-aes-256-gcm:${SS2022_KEY}" | b64enc)@${host}:${PORT_SS2022_W}#ss2022-warp")
   LINKS_WARP+=("ss://$(printf "%s" "aes-256-gcm:${SS_PWD}" | b64enc)@${host}:${PORT_SS_W}#ss-warp")
-  LINKS_WARP+=("tuic://${UUID}:$(urlenc "${UUID}")@${host}:${PORT_TUIC_W}?congestion_control=bbr&alpn=h3&insecure=1&allowInsecure=1&sni=${REALITY_SERVER}#tuic-v5-warp")
-  LINKS_WARP+=("anytls://$(urlenc "${ANYTLS_PWD}")@${host}:${PORT_ANYTLS_W}?insecure=1&sni=${REALITY_SERVER}#anytls-warp")
+  LINKS_WARP+=("tuic://${UUID}:$(urlenc "${UUID}")@${TH}:${PORT_TUIC_W}?congestion_control=bbr&alpn=h3&${TOPT}sni=${TSNI}#tuic-v5-warp")
+  LINKS_WARP+=("anytls://$(urlenc "${ANYTLS_PWD}")@${TH}:${PORT_ANYTLS_W}?${AOPT}sni=${TSNI}#anytls-warp")
 
   LINKS_ALL=("${LINKS_DIRECT[@]}" "${LINKS_WARP[@]}")
   return 0
@@ -99,6 +151,9 @@ gen_clash_sub(){
   mkdir -p "$SUB_DIR"
   local f="$SUB_DIR/clash.yaml" ip="$PUB_IP"
   local names=() lines=()
+  # TLS 真证书模式：hy2/tuic/anytls 用域名 + 去 skip-cert-verify
+  local CH="$ip" CS="$REALITY_SERVER" CSK=", skip-cert-verify: true" TUICS=""
+  if tls_on; then CH="$TLS_DOMAIN"; CS="$TLS_DOMAIN"; CSK=""; TUICS=", sni: '$TLS_DOMAIN'"; fi
   addp(){ names+=("$1"); lines+=("- {$2}"); }
   local i
 
@@ -107,24 +162,24 @@ gen_clash_sub(){
   addp vless-grpc-reality "name: 'vless-grpc-reality', type: vless, server: '$ip', port: $PORT_VLESS_GRPCR, uuid: '$UUID', udp: true, tls: true, servername: '$RS_GR', client-fingerprint: chrome, network: grpc, grpc-opts: {grpc-service-name: '$GRPC_SERVICE'}, reality-opts: {public-key: '$REALITY_PUB', short-id: '$REALITY_SID'}"
   addp trojan-reality "name: 'trojan-reality', type: trojan, server: '$ip', port: $PORT_TROJANR, password: '$UUID', udp: true, sni: '$RS_TR', client-fingerprint: chrome, reality-opts: {public-key: '$REALITY_PUB', short-id: '$REALITY_SID'}"
   addp vmess-ws "name: 'vmess-ws', type: vmess, server: '$ip', port: $PORT_VMESS_WS, uuid: '$UUID', alterId: 0, cipher: auto, udp: true, network: ws, ws-opts: {path: '$VMESS_WS_PATH'}"
-  addp hysteria2 "name: 'hysteria2', type: hysteria2, server: '$ip', port: $PORT_HY2, password: '$HY2_PWD', sni: '$REALITY_SERVER', skip-cert-verify: true, alpn: [h3], udp: true"
-  addp hysteria2-obfs "name: 'hysteria2-obfs', type: hysteria2, server: '$ip', port: $PORT_HY2_OBFS, password: '$HY2_PWD2', obfs: salamander, obfs-password: '$HY2_OBFS_PWD', sni: '$REALITY_SERVER', skip-cert-verify: true, alpn: [h3], udp: true"
+  addp hysteria2 "name: 'hysteria2', type: hysteria2, server: '$CH', port: $PORT_HY2, password: '$HY2_PWD', sni: '$CS'${CSK}, alpn: [h3], udp: true"
+  addp hysteria2-obfs "name: 'hysteria2-obfs', type: hysteria2, server: '$CH', port: $PORT_HY2_OBFS, password: '$HY2_PWD2', obfs: salamander, obfs-password: '$HY2_OBFS_PWD', sni: '$CS'${CSK}, alpn: [h3], udp: true"
   addp ss2022 "name: 'ss2022', type: ss, server: '$ip', port: $PORT_SS2022, cipher: 2022-blake3-aes-256-gcm, password: '$SS2022_KEY', udp: true"
   addp ss "name: 'ss', type: ss, server: '$ip', port: $PORT_SS, cipher: aes-256-gcm, password: '$SS_PWD', udp: true"
-  addp tuic-v5 "name: 'tuic-v5', type: tuic, server: '$ip', port: $PORT_TUIC, uuid: '$TUIC_UUID', password: '$TUIC_PWD', udp: true, alpn: [h3], skip-cert-verify: true, congestion-controller: bbr"
-  addp anytls "name: 'anytls', type: anytls, server: '$ip', port: $PORT_ANYTLS, password: '$ANYTLS_PWD', sni: '$REALITY_SERVER', skip-cert-verify: true, udp: true, client-fingerprint: chrome"
+  addp tuic-v5 "name: 'tuic-v5', type: tuic, server: '$CH', port: $PORT_TUIC, uuid: '$TUIC_UUID', password: '$TUIC_PWD', udp: true, alpn: [h3]${CSK}${TUICS}, congestion-controller: bbr"
+  addp anytls "name: 'anytls', type: anytls, server: '$CH', port: $PORT_ANYTLS, password: '$ANYTLS_PWD', sni: '$CS'${CSK}, udp: true, client-fingerprint: chrome"
 
   # WARP 10
   addp vless-reality-warp "name: 'vless-reality-warp', type: vless, server: '$ip', port: $PORT_VLESSR_W, uuid: '$UUID', udp: true, tls: true, flow: xtls-rprx-vision, servername: '$RS_VRW', client-fingerprint: chrome, network: tcp, reality-opts: {public-key: '$REALITY_PUB', short-id: '$REALITY_SID'}"
   addp vless-grpc-reality-warp "name: 'vless-grpc-reality-warp', type: vless, server: '$ip', port: $PORT_VLESS_GRPCR_W, uuid: '$UUID', udp: true, tls: true, servername: '$RS_GRW', client-fingerprint: chrome, network: grpc, grpc-opts: {grpc-service-name: '$GRPC_SERVICE'}, reality-opts: {public-key: '$REALITY_PUB', short-id: '$REALITY_SID'}"
   addp trojan-reality-warp "name: 'trojan-reality-warp', type: trojan, server: '$ip', port: $PORT_TROJANR_W, password: '$UUID', udp: true, sni: '$RS_TRW', client-fingerprint: chrome, reality-opts: {public-key: '$REALITY_PUB', short-id: '$REALITY_SID'}"
   addp vmess-ws-warp "name: 'vmess-ws-warp', type: vmess, server: '$ip', port: $PORT_VMESS_WS_W, uuid: '$UUID', alterId: 0, cipher: auto, udp: true, network: ws, ws-opts: {path: '$VMESS_WS_PATH'}"
-  addp hysteria2-warp "name: 'hysteria2-warp', type: hysteria2, server: '$ip', port: $PORT_HY2_W, password: '$HY2_PWD', sni: '$REALITY_SERVER', skip-cert-verify: true, alpn: [h3], udp: true"
-  addp hysteria2-obfs-warp "name: 'hysteria2-obfs-warp', type: hysteria2, server: '$ip', port: $PORT_HY2_OBFS_W, password: '$HY2_PWD2', obfs: salamander, obfs-password: '$HY2_OBFS_PWD', sni: '$REALITY_SERVER', skip-cert-verify: true, alpn: [h3], udp: true"
+  addp hysteria2-warp "name: 'hysteria2-warp', type: hysteria2, server: '$CH', port: $PORT_HY2_W, password: '$HY2_PWD', sni: '$CS'${CSK}, alpn: [h3], udp: true"
+  addp hysteria2-obfs-warp "name: 'hysteria2-obfs-warp', type: hysteria2, server: '$CH', port: $PORT_HY2_OBFS_W, password: '$HY2_PWD2', obfs: salamander, obfs-password: '$HY2_OBFS_PWD', sni: '$CS'${CSK}, alpn: [h3], udp: true"
   addp ss2022-warp "name: 'ss2022-warp', type: ss, server: '$ip', port: $PORT_SS2022_W, cipher: 2022-blake3-aes-256-gcm, password: '$SS2022_KEY', udp: true"
   addp ss-warp "name: 'ss-warp', type: ss, server: '$ip', port: $PORT_SS_W, cipher: aes-256-gcm, password: '$SS_PWD', udp: true"
-  addp tuic-v5-warp "name: 'tuic-v5-warp', type: tuic, server: '$ip', port: $PORT_TUIC_W, uuid: '$TUIC_UUID', password: '$TUIC_PWD', udp: true, alpn: [h3], skip-cert-verify: true, congestion-controller: bbr"
-  addp anytls-warp "name: 'anytls-warp', type: anytls, server: '$ip', port: $PORT_ANYTLS_W, password: '$ANYTLS_PWD', sni: '$REALITY_SERVER', skip-cert-verify: true, udp: true, client-fingerprint: chrome"
+  addp tuic-v5-warp "name: 'tuic-v5-warp', type: tuic, server: '$CH', port: $PORT_TUIC_W, uuid: '$TUIC_UUID', password: '$TUIC_PWD', udp: true, alpn: [h3]${CSK}${TUICS}, congestion-controller: bbr"
+  addp anytls-warp "name: 'anytls-warp', type: anytls, server: '$CH', port: $PORT_ANYTLS_W, password: '$ANYTLS_PWD', sni: '$CS'${CSK}, udp: true, client-fingerprint: chrome"
 
   local allinner directinner warpinner alljoined directjoined warpjoined
   allinner=$(printf "'%s', " "${names[@]}"); allinner="${allinner%, }"
@@ -188,6 +243,8 @@ gen_singbox_sub(){
   local f="$SUB_DIR/singbox.json" ip="$PUB_IP"
   local tags=()
   local direct_tags=() warp_tags=()
+  local TH="$ip" TS="$REALITY_SERVER" INC="true"
+  if tls_on; then TH="$TLS_DOMAIN"; TS="$TLS_DOMAIN"; INC="false"; fi
 
   _node(){ # $1 tag $2 json
     jq -n --argjson n "$2" '$n' >>/dev/null
@@ -198,6 +255,7 @@ gen_singbox_sub(){
     --arg RSVR "$RS_VR" --arg RSGR "$RS_GR" --arg RSTR "$RS_TR" \
     --arg RSVRW "$RS_VRW" --arg RSGRW "$RS_GRW" --arg RSTRW "$RS_TRW" \
     --arg GRPC "$GRPC_SERVICE" --arg VMWS "$VMESS_WS_PATH" --arg RSV "$REALITY_SERVER" \
+    --arg TH "$TH" --arg TS "$TS" --argjson INC "$INC" \
     --arg HY2 "$HY2_PWD" --arg HY22 "$HY2_PWD2" --arg HY2O "$HY2_OBFS_PWD" \
     --arg SS2022 "$SS2022_KEY" --arg SSPWD "$SS_PWD" \
     --arg TUICUUID "$TUIC_UUID" --arg TUICPWD "$TUIC_PWD" --arg ANYTLS "$ANYTLS_PWD" \
@@ -225,22 +283,22 @@ gen_singbox_sub(){
       {type:"vmess",tag:$t,server:$ip,server_port:$p,uuid:$UID,security:"auto",
        transport:{type:"ws",path:$VMWS}};
     def hy2($t;$p;$pw;$suffix):
-      {type:"hysteria2",tag:$t,server:$ip,server_port:$p,password:$pw,
-       tls:{enabled:true,insecure:true,alpn:["h3"],server_name:$RSV}};
+      {type:"hysteria2",tag:$t,server:$TH,server_port:$p,password:$pw,
+       tls:{enabled:true,insecure:$INC,alpn:["h3"],server_name:$TS}};
     def hy2o($t;$p;$pw;$opw;$suffix):
-      {type:"hysteria2",tag:$t,server:$ip,server_port:$p,password:$pw,
+      {type:"hysteria2",tag:$t,server:$TH,server_port:$p,password:$pw,
        obfs:{type:"salamander",password:$opw},
-       tls:{enabled:true,insecure:true,alpn:["h3"],server_name:$RSV}};
+       tls:{enabled:true,insecure:$INC,alpn:["h3"],server_name:$TS}};
     def ss2022($t;$p;$suffix):
       {type:"shadowsocks",tag:$t,server:$ip,server_port:$p,method:"2022-blake3-aes-256-gcm",password:$SS2022};
     def ss($t;$p;$suffix):
       {type:"shadowsocks",tag:$t,server:$ip,server_port:$p,method:"aes-256-gcm",password:$SSPWD};
     def tuic($t;$p;$suffix):
-      {type:"tuic",tag:$t,server:$ip,server_port:$p,uuid:$TUICUUID,password:$TUICPWD,
-       congestion_control:"bbr",tls:{enabled:true,insecure:true,alpn:["h3"],server_name:$RSV}};
+      {type:"tuic",tag:$t,server:$TH,server_port:$p,uuid:$TUICUUID,password:$TUICPWD,
+       congestion_control:"bbr",tls:{enabled:true,insecure:$INC,alpn:["h3"],server_name:$TS}};
     def anytls($t;$p;$suffix):
-      {type:"anytls",tag:$t,server:$ip,server_port:$p,password:$ANYTLS,
-       tls:{enabled:true,insecure:true,server_name:$RSV}};
+      {type:"anytls",tag:$t,server:$TH,server_port:$p,password:$ANYTLS,
+       tls:{enabled:true,insecure:$INC,server_name:$TS}};
     def all_names: ["vless-reality","vless-grpc-reality","trojan-reality","vmess-ws","hysteria2","hysteria2-obfs","ss2022","ss","tuic-v5","anytls",
                     "vless-reality-warp","vless-grpc-reality-warp","trojan-reality-warp","vmess-ws-warp","hysteria2-warp","hysteria2-obfs-warp","ss2022-warp","ss-warp","tuic-v5-warp","anytls-warp"];
     def direct_names: ["vless-reality","vless-grpc-reality","trojan-reality","vmess-ws","hysteria2","hysteria2-obfs","ss2022","ss","tuic-v5","anytls"];
@@ -366,6 +424,8 @@ gen_subs(){
 # ---- 订阅 HTTP 服务 ----
 write_sub_server(){
   mkdir -p "$SUB_DIR"
+  local TLS_UNIT_CERT="" TLS_UNIT_KEY=""
+  if tls_on; then TLS_UNIT_CERT="$CERT_DIR/fullchain.pem"; TLS_UNIT_KEY="$CERT_DIR/key.pem"; fi
   cat > "$SB_DIR/sub-server.py" <<'EOS'
 #!/usr/bin/env python3
 # Sing-Box-Plus 订阅服务：HTTP Basic 认证 + 密钥路径 + 短链接别名（/clash、/singbox）
@@ -457,7 +517,16 @@ if __name__ == '__main__':
         sys.stderr.write('SUB_DIR 不存在: %s\n' % SUB_DIR)
         sys.exit(1)
     srv = ThreadingHTTPServer(('0.0.0.0', SUB_PORT), Handler)
-    sys.stderr.write('订阅服务已启动: 0.0.0.0:%d  路径前缀=/%s  认证=%s\n' % (SUB_PORT, SUB_PATH, 'on' if SUB_USER else 'off'))
+    tls_cert = os.environ.get('TLS_CERT', '')
+    tls_key = os.environ.get('TLS_KEY', '')
+    scheme = 'http'
+    if tls_cert and tls_key and os.path.exists(tls_cert) and os.path.exists(tls_key):
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(tls_cert, tls_key)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        scheme = 'https'
+    sys.stderr.write('订阅服务已启动: %s://0.0.0.0:%d  路径前缀=/%s  认证=%s\n' % (scheme, SUB_PORT, SUB_PATH, 'on' if SUB_USER else 'off'))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -477,6 +546,8 @@ Environment=SUB_PORT=${SUB_PORT}
 Environment=SUB_USER=${SUB_USER}
 Environment=SUB_PASS=${SUB_PASS}
 Environment=SUB_PATH=${SUB_PATH}
+Environment=TLS_CERT=${TLS_UNIT_CERT}
+Environment=TLS_KEY=${TLS_UNIT_KEY}
 ExecStart=/usr/bin/env python3 ${SB_DIR}/sub-server.py
 Restart=always
 RestartSec=3
@@ -571,6 +642,53 @@ sub_menu(){
          read -rp "回车返回..." _ || true ;;
       7) SUB_PATH="$(gen_sub_path)"; write_sub_env; serve_subs_start; show_subs
          echo -e "  ${C_YELLOW}⚠ 密钥路径已更换，旧订阅链接失效，请到各客户端更新${C_RESET}"
+         read -rp "回车返回..." _ || true ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+# ---- TLS / 域名设置菜单 ----
+tls_menu(){
+  while true; do
+    local crt="$CERT_DIR/fullchain.pem" csubj="" cexp=""
+    if [[ -s "$crt" ]]; then
+      csubj=$(openssl x509 -in "$crt" -noout -subject 2>/dev/null | sed 's/.*CN *= *//')
+      cexp=$(openssl x509 -in "$crt" -noout -enddate 2>/dev/null | cut -d= -f2)
+    fi
+    hr
+    echo -e " ${C_CYAN}🔒 TLS / 域名（真证书）${C_RESET}"
+    hr
+    if tls_on; then echo -e "  状态: ${C_GREEN}已启用（订阅 HTTPS + 节点真证书）${C_RESET}"; else echo -e "  状态: ${C_DIM}未启用（使用自签证书，节点需 insecure）${C_RESET}"; fi
+    echo -e "  域名: ${TLS_DOMAIN:-（未设置）}"
+    echo -e "  ${C_DIM}证书主体: ${csubj:-—}    到期: ${cexp:-—}${C_RESET}"
+    hr
+    echo -e "  ${C_GREEN}1)${C_RESET} 申请 / 更新证书（DNS-01，走 Cloudflare）"
+    echo -e "  ${C_GREEN}2)${C_RESET} 关闭 TLS（回退自签证书）"
+    echo -e "  ${C_RED}0)${C_RESET} 返回主菜单"
+    hr
+    read -rp "选择: " top || true
+    case "${top:-}" in
+      1) read -rp "域名 (如 node.ezynode.net): " td || true
+         [[ -n "$td" ]] || { warn "域名不能为空"; read -rp "回车返回..." _ || true; continue; }
+         read -rp "邮箱 (Let's Encrypt 通知用): " te || true
+         read -rsp "Cloudflare API Token (Zone:DNS:Edit): " tk || true; echo
+         [[ -n "$tk" ]] || { warn "Token 不能为空"; read -rp "回车返回..." _ || true; continue; }
+         TLS_DOMAIN="$td"; TLS_EMAIL="$te"; TLS_CF_TOKEN="$tk"; write_tls_env
+         if acme_issue; then
+           write_sub_server; systemctl restart "${SUB_SERVICE}" >/dev/null 2>&1 || true
+           systemctl restart "${SYSTEMD_SERVICE}" >/dev/null 2>&1 || true
+           gen_subs 4 || true
+           ok "TLS 已启用：订阅走 HTTPS，hy2/tuic/anytls 换真证书"
+           show_subs
+         fi
+         read -rp "回车返回..." _ || true ;;
+      2) TLS_DOMAIN=""; TLS_EMAIL=""; TLS_CF_TOKEN=""; write_tls_env
+         rm -f "$CERT_DIR/fullchain.pem" "$CERT_DIR/key.pem"; mk_cert
+         write_sub_server; systemctl restart "${SUB_SERVICE}" >/dev/null 2>&1 || true
+         systemctl restart "${SYSTEMD_SERVICE}" >/dev/null 2>&1 || true
+         gen_subs 4 || true
+         ok "已关闭 TLS，回退自签证书（节点恢复 insecure）"
          read -rp "回车返回..." _ || true ;;
       0) return 0 ;;
     esac

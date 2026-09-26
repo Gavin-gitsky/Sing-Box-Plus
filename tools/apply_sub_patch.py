@@ -28,10 +28,12 @@ NEW_PRINT = r'''print_links_grouped(){
   echo -e "  聚合页(全部链接)  : ${sbase}/"
   echo -e "${C_DIM}  订阅服务未启动？主菜单选 7) 订阅链接 一键启动${C_RESET}"
   hr
+  if ! tls_on; then
   echo -e "${C_YELLOW}📌 如果你使用 v2rayN/Xray-core v26.2.6+，hysteria2 节点的 allowInsecure 已被移除，${C_RESET}"
   echo -e "${C_YELLOW}   请改用以下 pinnedPeerCertSha256 节点：${C_RESET}"
   echo "  hy2://$(urlenc "${HY2_PWD}")@${host}:${PORT_HY2}?sni=${REALITY_SERVER}&pcs=${CRT_SHA256}#hysteria2-pinnedPeerCertSha256"
   echo "  hy2://$(urlenc "${HY2_PWD}")@${host}:${PORT_HY2_W}?sni=${REALITY_SERVER}&pcs=${CRT_SHA256}#hysteria2-warp-pinnedPeerCertSha256"
+  fi
   hr
 }
 '''
@@ -64,7 +66,8 @@ def main():
     if old_bbr not in src:
         sys.exit("找不到 banner 锚点")
     src = src.replace(old_bbr, old_bbr +
-                      '\n  echo -e "  ${C_MAGENTA}7)${C_RESET} 订阅链接（Clash / sing-box / 聚合）"', 1)
+                      '\n  echo -e "  ${C_MAGENTA}7)${C_RESET} 订阅链接（Clash / sing-box / 聚合）"'
+                      '\n  echo -e "  ${C_MAGENTA}9)${C_RESET} TLS / 域名（真证书：订阅HTTPS + 节点）"', 1)
     old_url = 'echo -e "${C_CYAN} 脚本更新地址: https://github.com/Alvin9999-newpac/Sing-Box-Plus${C_RESET}"'
     src = src.replace(old_url, old_url +
                       '\n  echo -e "${C_MAGENTA} 订阅增强版：一键生成 Clash / sing-box / 聚合订阅（20 节点一条链接）${C_RESET}"', 1)
@@ -74,7 +77,8 @@ def main():
     if old_case not in src:
         sys.exit("找不到菜单 case 锚点")
     src = src.replace(old_case, old_case +
-                      '\n    7) sub_menu; read -rp "回车返回..." _ || true; menu ;;', 1)
+                      '\n    7) sub_menu; read -rp "回车返回..." _ || true; menu ;;'
+                      '\n    9) tls_menu; read -rp "回车返回..." _ || true; menu ;;', 1)
 
     # 5) 安装流程结束后自动生成订阅并起服务
     old_inst = 'systemctl restart "${SYSTEMD_SERVICE}" || true\n  set -e'

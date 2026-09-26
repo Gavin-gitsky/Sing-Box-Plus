@@ -13,6 +13,7 @@
 | 🖥 聚合页 | `http://IP:2088/` — 一个页面列出全部 20 条链接 + 三个订阅地址，点一下复制 |
 | 🧷 分组订阅 | `/direct`（仅直连 10）、`/warp`（仅 WARP 10）、`/links.txt`（明文） |
 | 🔐 访问控制 | HTTP Basic 账号密码 + 随机密钥路径（默认开启，**账号/密码/路径均随机生成**，链接形如 `http://<账号>:<密码>@IP:2088/<随机token>/clash`）|
+| 🔒 TLS 真证书（可选） | 配一个域名+Cloudflare Token，一键签 Let's Encrypt 证书：订阅走 HTTPS，且 hy2/tuic/anytls 换真证书、**去 insecure**（消除 v2rayN 的中间人警告）|
 | ⚙️ 订阅服务 | 内置 systemd 托管服务（python3），默认端口 **2088**，菜单里可改端口/账号/密钥路径 |
 | 🔄 自动同步 | 安装完成 / 一键换端口后，订阅自动重新生成 |
 
@@ -42,11 +43,14 @@ chmod +x sing-box-plus.sh && bash sing-box-plus.sh
  4) 一键更换所有端口          ← 换完自动重生成订阅
  5) 一键开启 BBR
  7) 订阅链接（Clash / sing-box / 聚合）   ← 新增
+ 9) TLS / 域名（真证书：订阅HTTPS + 节点）   ← 新增
  8) 卸载
  0) 退出
 ```
 
 进入 `7)` 可：重新生成订阅 / 查看订阅链接 / 启动·重启·停止订阅服务 / 修改订阅端口 / 修改账号密码 / 重置密钥路径。
+
+进入 `9)` 可：申请/更新证书、关闭 TLS（回退自签）。
 
 > ⚠️ 记得把订阅端口（默认 2088/TCP）放行到云厂商「安全组」——脚本只能放行系统防火墙。
 
@@ -67,6 +71,21 @@ http://<账号>:<密码>@IP:2088/<token>/all       # v2rayN / 小火箭
 
 > 账号/密码/密钥路径存在 `/opt/sing-box/sub.env`，随时可在 `7) 订阅链接` 菜单里改（改了需到各客户端更新订阅地址）。
 > ⚠️ 链接本身就含密码，谁拿到谁能用——请勿外发；如需更稳，建议后面挂反代上 TLS。
+
+## 🔒 TLS 真证书（可选，默认关闭）
+
+默认用自签证书，节点里带 `insecure=1`/`skip-cert-verify`。若想彻底消除「不安全/中间人」警告，可一键切真证书（**需一个子域，且域名在 Cloudflare 托管**）：
+
+1. 在 Cloudflare 给子域（如 `node.example.com`）加 A 记录 → 你的 VPS IP；
+2. 备一个 CF API Token（权限 `Zone → DNS → Edit`）；
+3. 主菜单 `9) TLS / 域名` → `1)` 填入域名/邮箱/Token → 自动用 acme.sh 走 **DNS-01** 签发 Let's Encrypt 证书（**不占 80/443**），并配好自动续期+重载。
+
+效果（自动完成）：
+- 订阅服务切 HTTPS；
+- 8 个 TLS 节点（hy2 / hy2-obfs / tuic / anytls，直连+WARP）改用域名 + **去掉 insecure / skip-cert-verify**；
+- 客户端需**重导一次**订阅。
+
+> 域名/Token 存在 `/opt/sing-box/tls.env`（权限 600），不进仓库、不写死。想关掉走 `9) → 2)` 回退自签。
 
 ## 客户端导入
 
@@ -104,6 +123,6 @@ bash tools/selftest.sh
 ## Roadmap
 
 - [x] 订阅路径 token 校验 + Basic 认证（已落地）
-- [ ] 订阅服务可选 HTTPS（Caddy 自动证书）
+- [x] 订阅服务可选 HTTPS + 节点真证书（acme.sh DNS-01，已落地）
 - [ ] 支持 Clash `rule-providers`（按需下载规则集，省内存）
 - [ ] 换端口时自动同步 Cloudflare / 云安全组（API）
