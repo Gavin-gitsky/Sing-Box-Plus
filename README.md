@@ -21,9 +21,17 @@
 ## 使用
 
 ```bash
-wget -O sing-box-plus.sh https://raw.githubusercontent.com/<你的账号>/Sing-Box-Plus-Plus/main/sing-box-plus.sh
+# 直连（VPS 在境外一般没问题）
+wget -O sing-box-plus.sh https://raw.githubusercontent.com/Gavin-gitsky/Sing-Box-Plus/main/sing-box-plus.sh
 chmod +x sing-box-plus.sh && bash sing-box-plus.sh
 ```
+
+> 国内服务器拉不动 raw.githubusercontent.com 的话，换镜像：
+> ```bash
+> wget -O sing-box-plus.sh https://gh-proxy.com/https://raw.githubusercontent.com/Gavin-gitsky/Sing-Box-Plus/main/sing-box-plus.sh
+> chmod +x sing-box-plus.sh && bash sing-box-plus.sh
+> ```
+> 或直接从 [Releases](https://github.com/Gavin-gitsky/Sing-Box-Plus/releases/latest) 下载 `sing-box-plus.sh` 再上传到服务器。
 
 ```
  1) 安装/部署（20 节点）      ← 装完自动生成订阅并启动订阅服务
