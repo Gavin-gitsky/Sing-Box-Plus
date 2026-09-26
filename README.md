@@ -12,7 +12,7 @@
 | 📦 通用聚合订阅 | `http://IP:2088/all` — 全部 20 条链接的 base64（v2rayN / 小火箭 / Shadowrocket 直接导入） |
 | 🖥 聚合页 | `http://IP:2088/` — 一个页面列出全部 20 条链接 + 三个订阅地址，点一下复制 |
 | 🧷 分组订阅 | `/direct`（仅直连 10）、`/warp`（仅 WARP 10）、`/links.txt`（明文） |
-| 🔐 访问控制 | HTTP Basic 账号密码 + 随机密钥路径（默认开启，链接形如 `http://gavin:密码@IP:2088/<随机token>/clash`）|
+| 🔐 访问控制 | HTTP Basic 账号密码 + 随机密钥路径（默认开启，**账号/密码/路径均随机生成**，链接形如 `http://<账号>:<密码>@IP:2088/<随机token>/clash`）|
 | ⚙️ 订阅服务 | 内置 systemd 托管服务（python3），默认端口 **2088**，菜单里可改端口/账号/密钥路径 |
 | 🔄 自动同步 | 安装完成 / 一键换端口后，订阅自动重新生成 |
 
@@ -54,15 +54,15 @@ chmod +x sing-box-plus.sh && bash sing-box-plus.sh
 
 订阅服务自带两层门，防止链接被人撞到/泄露后白嫖：
 
-1. **HTTP Basic 账号密码**：默认用户名 `gavin`，密码在首次安装时随机生成；未带凭据一律 `401`。
+1. **HTTP Basic 账号密码**：**账号与密码均在首次安装时随机生成**（不是写死的，避免仓库里泄露用户名）；未带凭据一律 `401`。
 2. **随机密钥路径**：所有订阅挂在 `http://IP:端口/<随机token>/...` 下，根路径直接 `404`，扫不到。
 
-最终链接形如（客户端直接整条粘贴即可）：
+最终链接形如（客户端直接整条粘贴即可，账号密码在菜单 `2` 里直接给你）：
 
 ```
-http://gavin:密码@IP:2088/<token>/clash      # Clash / Mihomo
-http://gavin:密码@IP:2088/<token>/singbox   # sing-box
-http://gavin:密码@IP:2088/<token>/all       # v2rayN / 小火箭
+http://<账号>:<密码>@IP:2088/<token>/clash      # Clash / Mihomo
+http://<账号>:<密码>@IP:2088/<token>/singbox   # sing-box
+http://<账号>:<密码>@IP:2088/<token>/all       # v2rayN / 小火箭
 ```
 
 > 账号/密码/密钥路径存在 `/opt/sing-box/sub.env`，随时可在 `7) 订阅链接` 菜单里改（改了需到各客户端更新订阅地址）。
@@ -70,10 +70,10 @@ http://gavin:密码@IP:2088/<token>/all       # v2rayN / 小火箭
 
 ## 客户端导入
 
-- **Clash / Mihomo**（Clash Verge、Mihomo Party、OpenClash…）：订阅地址填 `http://gavin:密码@IP:2088/<token>/clash`
-- **sing-box**（SFA / SFI / SFM / Hiddify…）：填 `http://gavin:密码@IP:2088/<token>/singbox`
-- **v2rayN / 小火箭 / Shadowrocket / v2rayNG**：填 `http://gavin:密码@IP:2088/<token>/all`
-- 想手动挑节点：打开 `http://gavin:密码@IP:2088/<token>/` 逐个复制（浏览器会弹登录框）
+- **Clash / Mihomo**（Clash Verge、Mihomo Party、OpenClash…）：订阅地址填 `http://<账号>:<密码>@IP:2088/<token>/clash`
+- **sing-box**（SFA / SFI / SFM / Hiddify…）：填 `http://<账号>:<密码>@IP:2088/<token>/singbox`
+- **v2rayN / 小火箭 / Shadowrocket / v2rayNG**：填 `http://<账号>:<密码>@IP:2088/<token>/all`
+- 想手动挑节点：打开 `http://<账号>:<密码>@IP:2088/<token>/` 逐个复制（浏览器会弹登录框）
 
 ## 与上游保持同步
 

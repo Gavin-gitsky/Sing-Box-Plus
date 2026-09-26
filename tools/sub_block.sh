@@ -14,6 +14,7 @@ SUB_PATH=${SUB_PATH:-}
 rand_hex(){ if command -v openssl >/dev/null 2>&1; then openssl rand -hex "$1"; else head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; fi; }
 gen_sub_pass(){ tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16; }
 gen_sub_path(){ rand_hex 16; }
+gen_sub_user(){ printf 'u%s' "$(rand_hex 4)"; }
 
 # 带凭据+密钥路径的订阅根地址（未配置凭据时退回裸地址）
 sub_base(){
@@ -36,7 +37,7 @@ write_sub_env(){
 
 ensure_sub_secrets(){
   local changed=0
-  [[ -n "$SUB_USER" ]] || { SUB_USER="gavin"; changed=1; }
+  [[ -n "$SUB_USER" ]] || { SUB_USER="$(gen_sub_user)"; changed=1; }
   [[ -n "$SUB_PASS" ]] || { SUB_PASS="$(gen_sub_pass)"; changed=1; }
   [[ -n "$SUB_PATH" ]] || { SUB_PATH="$(gen_sub_path)"; changed=1; }
   [[ "$changed" == "1" ]] && write_sub_env
@@ -562,7 +563,7 @@ sub_menu(){
            SUB_PORT="$np"; write_sub_env; serve_subs_start; show_subs
          else warn "端口不合法"; fi
          read -rp "回车返回..." _ || true ;;
-      6) read -rp "新账号(回车保留 ${SUB_USER:-gavin}): " nu || true
+      6) read -rp "新账号(回车保留当前): " nu || true
          [[ -n "$nu" ]] && SUB_USER="$nu"
          read -rsp "新密码(回车=随机生成): " npw || true; echo
          if [[ -n "$npw" ]]; then SUB_PASS="$npw"; else SUB_PASS="$(gen_sub_pass)"; fi
