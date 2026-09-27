@@ -1452,6 +1452,73 @@ build_links(){
 }
 
 # ---- 生成：Clash / Mihomo 订阅 ----
+# ===== 客户端分流规则库（自建分发：客户端无需翻墙取规则）=====
+# 订阅目录下 rules/ 存放 geosite/geoip 规则库，由本机订阅服务直接分发（rules 路径免认证，内容是公开列表）
+RULES_DIR_NAME="rules"
+SUB_RULES_DIR(){ printf '%s/%s' "$SUB_DIR" "$RULES_DIR_NAME"; }
+
+sub_rules_url(){ # $1=文件名 → 客户端可直取的规则库 URL（不含凭据；rules/ 免认证）
+  local host="${PUB_IP:-}" scheme="http"
+  if tls_on; then host="$TLS_DOMAIN"; scheme="https"; fi
+  printf '%s://%s:%s/%s/rules/%s' "$scheme" "$host" "$SUB_PORT" "$SUB_PATH" "$1"
+}
+
+_dl_rule(){ # $1=目标文件 $2..=镜像 URL（依次尝试）
+  local out="$1"; shift
+  local u tmp="${out}.part"
+  for u in "$@"; do
+    rm -f "$tmp"
+    if curl -fsSL --max-time 60 -o "$tmp" "$u" 2>/dev/null && [[ -s "$tmp" ]] && (( $(stat -c%s "$tmp" 2>/dev/null || echo 0) > 1024 )); then
+      mv -f "$tmp" "$out"; return 0
+    fi
+  done
+  rm -f "$tmp"; return 1
+}
+
+ensure_rule_files(){ # 下载/刷新客户端分流规则库；FORCE_RULES=1 强制刷新
+  RULE_KIT=0; RULE_MIHOMO=0
+  local rd; rd="$(SUB_RULES_DIR)"; mkdir -p "$rd" || return 1
+  local maxage=$((7 * 24 * 3600)) need=0 f oldest
+  for f in geosite-cn.srs geoip-cn.srs mihomo-cn-domain.mrs mihomo-cn-ip.mrs; do
+    [[ -s "$rd/$f" ]] || need=1
+  done
+  if (( ! need )) && (( ${FORCE_RULES:-0} )); then need=1; fi
+  if (( ! need )); then
+    oldest=$(stat -c %Y "$rd"/geosite-cn.srs "$rd"/geoip-cn.srs "$rd"/mihomo-cn-domain.mrs "$rd"/mihomo-cn-ip.mrs 2>/dev/null | sort -n | head -1)
+    (( $(date +%s) - ${oldest:-0} > maxage )) && need=1
+  fi
+  if (( need )); then
+    info "更新客户端分流规则库（geosite/geoip，约 200KB）…"
+    _dl_rule "$rd/geosite-cn.srs" \
+      "https://gh-proxy.com/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs" \
+      "https://ghproxy.net/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs" \
+      "https://testingcf.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/rule-set/geosite-cn.srs" || true
+    _dl_rule "$rd/geoip-cn.srs" \
+      "https://gh-proxy.com/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs" \
+      "https://ghproxy.net/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs" \
+      "https://testingcf.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/rule-set/geoip-cn.srs" || true
+    _dl_rule "$rd/mihomo-cn-domain.mrs" \
+      "https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs" \
+      "https://ghproxy.net/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs" \
+      "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.mrs" || true
+    _dl_rule "$rd/mihomo-cn-ip.mrs" \
+      "https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs" \
+      "https://ghproxy.net/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs" \
+      "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.mrs" || true
+  fi
+  if [[ -s "$rd/geosite-cn.srs" && -s "$rd/geoip-cn.srs" ]]; then
+    RULE_KIT=1; ok "sing-box 分流规则库就绪（geosite-cn + geoip-cn）"
+  else
+    warn "sing-box 规则库缺失，订阅退回简单分流（.cn/私有 IP 直连）"
+  fi
+  if [[ -s "$rd/mihomo-cn-domain.mrs" && -s "$rd/mihomo-cn-ip.mrs" ]]; then
+    RULE_MIHOMO=1; ok "mihomo 分流规则库就绪（cn 域名 + cn IP）"
+  else
+    warn "mihomo 规则库缺失，Clash 订阅退回简单分流"
+  fi
+  return 0
+}
+
 gen_clash_sub(){
   load_env || true; load_creds || true; load_ports || true
   [[ -n "$PUB_HOST" ]] || build_links 4 || return 1
@@ -1533,11 +1600,47 @@ proxy-groups:
   - {name: '直连节点', type: select, proxies: ${directjoined}}
   - {name: 'WARP节点', type: select, proxies: ${warpjoined}}
   - {name: '漏网之鱼', type: select, proxies: ['节点选择', '直连节点', '自动选择', DIRECT]}
+EOF
+    if (( ${RULE_MIHOMO:-0} )); then
+      local u_dom u_ip
+      u_dom="$(sub_rules_url mihomo-cn-domain.mrs)"; u_ip="$(sub_rules_url mihomo-cn-ip.mrs)"
+      cat <<EOF
+rule-providers:
+  cn_domain:
+    type: http
+    behavior: domain
+    format: mrs
+    url: '$u_dom'
+    path: ./ruleset/cn_domain.mrs
+    interval: 604800
+  cn_ipcidr:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: '$u_ip'
+    path: ./ruleset/cn_ipcidr.mrs
+    interval: 604800
+rules:
+  # 内网/保留地址直连（不走代理）
+  - 'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve'
+  - 'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve'
+  - 'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve'
+  - 'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve'
+  - 'IP-CIDR,100.64.0.0/10,DIRECT,no-resolve'
+  # 国内域名/IP 直连（规则库由本订阅服务分发，无需客户端额外下载）
+  - 'RULE-SET,cn_domain,DIRECT'
+  - 'RULE-SET,cn_ipcidr,DIRECT'
+  - 'DOMAIN-SUFFIX,cn,DIRECT'
+  - 'MATCH,漏网之鱼'
+EOF
+    else
+      cat <<EOF
 rules:
   - 'DOMAIN-SUFFIX,cn,DIRECT'
   - 'GEOIP,CN,DIRECT,no-resolve'
   - 'MATCH,漏网之鱼'
 EOF
+    fi
   } > "$f"
   ok "已生成 Clash 订阅: $f"
 }
@@ -1652,6 +1755,30 @@ gen_singbox_sub(){
         default_domain_resolver:{server:"dns-cn"}
       }
     }' > "$f"
+  # ---- 客户端分流：国内域名/IP 直连（规则库由本订阅服务分发；缺失则保留上面的简单规则）----
+  if (( ${RULE_KIT:-0} )); then
+    local u_geo u_ip
+    u_geo="$(sub_rules_url geosite-cn.srs)"; u_ip="$(sub_rules_url geoip-cn.srs)"
+    jq --arg ug "$u_geo" --arg ui "$u_ip" '
+      .dns.rules = [
+        {rule_set:["geosite-cn"],server:"dns-cn"},
+        {domain_suffix:[".cn"],server:"dns-cn"}
+      ]
+      | .dns.final = "dns-remote"
+      | .route.rule_set = [
+          {type:"remote",tag:"geosite-cn",format:"binary",url:$ug,download_detour:"direct",update_interval:"7d"},
+          {type:"remote",tag:"geoip-cn",format:"binary",url:$ui,download_detour:"direct",update_interval:"7d"}
+        ]
+      | .route.rules = [
+          {action:"sniff"},
+          {protocol:"dns",action:"hijack-dns"},
+          {ip_is_private:true,outbound:"direct"},
+          {rule_set:["geosite-cn"],outbound:"direct"},
+          {rule_set:["geoip-cn"],outbound:"direct"},
+          {domain_suffix:[".cn"],outbound:"direct"}
+        ]
+    ' "$f" > "$f.new" && mv -f "$f.new" "$f" || warn "sing-box 分流规则写入失败，保留简单分流"
+  fi
   if jq -e . "$f" >/dev/null 2>&1; then ok "已生成 sing-box 订阅: $f"; else err "sing-box 订阅生成失败（JSON 校验未通过）"; return 1; fi
 }
 
@@ -1723,6 +1850,7 @@ EOF
 gen_subs(){
   build_links "${1:-4}" || return 1
   ensure_sub_secrets
+  ensure_rule_files || true          # 客户端分流规则库（缺失则自动退回简单规则）
   gen_clash_sub || true
   gen_singbox_sub || true
   gen_all_sub "${1:-4}" || true
@@ -1754,6 +1882,10 @@ class Handler(SimpleHTTPRequestHandler):
         sys.stderr.write('%s - [%s] %s\n' % (self.address_string(), self.log_date_time_string(), fmt % args))
 
     def _authed(self):
+        # rules/ 目录（分流规则库）免认证：内容是公开的 geosite/geoip 列表，客户端取用不应依赖凭据
+        p = self.path.split('?', 1)[0]
+        if SUB_PATH and p.startswith('/' + SUB_PATH + '/rules/'):
+            return True
         if not SUB_USER and not SUB_PASS:
             return True
         h = self.headers.get('Authorization', '')
@@ -1928,6 +2060,7 @@ sub_menu(){
     echo -e "  ${C_GREEN}5)${C_RESET} 修改订阅端口"
     echo -e "  ${C_GREEN}6)${C_RESET} 修改订阅账号密码"
     echo -e "  ${C_GREEN}7)${C_RESET} 重置密钥路径（换新 token）"
+    echo -e "  ${C_GREEN}8)${C_RESET} 更新分流规则库（geosite/geoip）并重生成订阅"
     echo -e "  ${C_RED}0)${C_RESET} 返回主菜单"
     hr
     read -rp "选择: " sop || true
@@ -1950,6 +2083,7 @@ sub_menu(){
       7) SUB_PATH="$(gen_sub_path)"; write_sub_env; serve_subs_start; show_subs
          echo -e "  ${C_YELLOW}⚠ 密钥路径已更换，旧订阅链接失效，请到各客户端更新${C_RESET}"
          read -rp "回车返回..." _ || true ;;
+      8) FORCE_RULES=1 ensure_rule_files; gen_subs 4; read -rp "回车返回..." _ || true ;;
       0) return 0 ;;
     esac
   done
