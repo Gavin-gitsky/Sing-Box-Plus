@@ -1295,11 +1295,12 @@ safe_source_env "$SB_DIR/tls.env" 2>/dev/null || true
 TLS_DOMAIN=${TLS_DOMAIN:-}
 TLS_EMAIL=${TLS_EMAIL:-}
 TLS_CF_TOKEN=${TLS_CF_TOKEN:-}
+TLS_SAN=${TLS_SAN:-}
 
 write_tls_env(){
   mkdir -p "$SB_DIR"
   local tmp; tmp="$(mktemp "${SB_DIR}/tls.env.XXXXXX")"
-  printf 'TLS_DOMAIN=%s\nTLS_EMAIL=%s\nTLS_CF_TOKEN=%s\n' "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_CF_TOKEN" > "$tmp"
+  printf 'TLS_DOMAIN=%s\nTLS_EMAIL=%s\nTLS_CF_TOKEN=%s\nTLS_SAN=%s\n' "$TLS_DOMAIN" "$TLS_EMAIL" "$TLS_CF_TOKEN" "$TLS_SAN" > "$tmp"
   mv "$tmp" "$SB_DIR/tls.env"; chmod 600 "$SB_DIR/tls.env" 2>/dev/null || true
 }
 
@@ -1327,9 +1328,19 @@ acme_issue(){
   acme_install || return 1
   local ac="$HOME/.acme.sh/acme.sh"
   export CF_Token="$TLS_CF_TOKEN"
-  info "向 Let's Encrypt 申请证书：$TLS_DOMAIN （DNS-01，走 Cloudflare API，不占 80/443）"
-  "$ac" --issue --dns dns_cf -d "$TLS_DOMAIN" --keylength ec-256 --server letsencrypt || {
-    err "证书申请失败：请确认①域名已在 Cloudflare；②Token 权限为 Zone→DNS→Edit；③该子域存在"
+  local san; local -a dargs=(-d "$TLS_DOMAIN")
+  local IFS=','
+  for san in $TLS_SAN; do
+    san="${san// /}"
+    [[ -n "$san" && "$san" != "$TLS_DOMAIN" ]] && dargs+=(-d "$san")
+  done
+  if [[ ${#dargs[@]} -gt 2 ]]; then
+    info "向 Let's Encrypt 申请证书：$TLS_DOMAIN ［含 SAN：$TLS_SAN］（DNS-01，走 Cloudflare API，不占 80/443）"
+  else
+    info "向 Let's Encrypt 申请证书：$TLS_DOMAIN （DNS-01，走 Cloudflare API，不占 80/443）"
+  fi
+  "$ac" --issue --dns dns_cf "${dargs[@]}" --keylength ec-256 --server letsencrypt || {
+    err "证书申请失败：请确认①域名已在 Cloudflare；②Token 权限为 Zone→DNS→Edit；③该子域存在（通配符用 *.域名）"
     return 1; }
   "$ac" --install-cert -d "$TLS_DOMAIN" --ecc \
     --key-file "$CERT_DIR/key.pem" --fullchain-file "$CERT_DIR/fullchain.pem" \
@@ -1906,9 +1917,14 @@ tls_menu(){
     hr
     if tls_on; then echo -e "  状态: ${C_GREEN}已启用（订阅 HTTPS + 节点真证书）${C_RESET}"; else echo -e "  状态: ${C_DIM}未启用（使用自签证书，节点需 insecure）${C_RESET}"; fi
     echo -e "  域名: ${TLS_DOMAIN:-（未设置）}"
+    if [[ -n "$TLS_SAN" ]]; then echo -e "  额外域名(SAN): ${TLS_SAN//,/, }"; else echo -e "  额外域名(SAN): （无）"; fi
     echo -e "  ${C_DIM}证书主体: ${csubj:-—}    到期: ${cexp:-—}${C_RESET}"
+    if [[ -s "$crt" ]]; then
+      echo -e "  ${C_DIM}证书覆盖: $(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null | tail -n +2 | tr -d ' ' | tr '\n' ' ')${C_RESET}"
+    fi
     hr
     echo -e "  ${C_GREEN}1)${C_RESET} 申请 / 更新证书（DNS-01，走 Cloudflare）"
+    echo -e "  ${C_GREEN}3)${C_RESET} 追加/修改 SAN 并重签（复用已存 Token）"
     echo -e "  ${C_GREEN}2)${C_RESET} 关闭 TLS（回退自签证书）"
     echo -e "  ${C_RED}0)${C_RESET} 返回主菜单"
     hr
@@ -1919,7 +1935,8 @@ tls_menu(){
          read -rp "邮箱 (Let's Encrypt 通知用): " te || true
          read -rsp "Cloudflare API Token (Zone:DNS:Edit): " tk || true; echo
          [[ -n "$tk" ]] || { warn "Token 不能为空"; read -rp "回车返回..." _ || true; continue; }
-         TLS_DOMAIN="$td"; TLS_EMAIL="$te"; TLS_CF_TOKEN="$tk"; write_tls_env
+         read -rp "额外域名/SAN（空格分隔，可留空；如 *.ezylink.cc.cd node.ezylink.cc.cd）: " ts || true
+         TLS_DOMAIN="$td"; TLS_EMAIL="$te"; TLS_CF_TOKEN="$tk"; TLS_SAN="${ts// /,}"; write_tls_env
          if acme_issue; then
            write_sub_server; systemctl restart "${SUB_SERVICE}" >/dev/null 2>&1 || true
            systemctl restart "${SYSTEMD_SERVICE}" >/dev/null 2>&1 || true
@@ -1928,7 +1945,17 @@ tls_menu(){
            show_subs
          fi
          read -rp "回车返回..." _ || true ;;
-      2) TLS_DOMAIN=""; TLS_EMAIL=""; TLS_CF_TOKEN=""; write_tls_env
+      3) [[ -n "$TLS_DOMAIN" && -n "$TLS_CF_TOKEN" ]] || { warn "尚未配置域名/Token，请先用 1) 申请"; read -rp "回车返回..." _ || true; continue; }
+         read -rp "额外域名/SAN（空格分隔，留空=仅主域名；支持 *.域名）: " ts || true
+         TLS_SAN="${ts// /,}"; write_tls_env
+         if acme_issue; then
+           systemctl restart "${SYSTEMD_SERVICE}" >/dev/null 2>&1 || true
+           gen_subs 4 || true
+           ok "证书已重签：覆盖 ${TLS_DOMAIN}${TLS_SAN:+ + ${TLS_SAN//,/, }}"
+           show_subs
+         fi
+         read -rp "回车返回..." _ || true ;;
+      2) TLS_DOMAIN=""; TLS_EMAIL=""; TLS_CF_TOKEN=""; TLS_SAN=""; write_tls_env
          rm -f "$CERT_DIR/fullchain.pem" "$CERT_DIR/key.pem"; mk_cert
          write_sub_server; systemctl restart "${SUB_SERVICE}" >/dev/null 2>&1 || true
          systemctl restart "${SYSTEMD_SERVICE}" >/dev/null 2>&1 || true

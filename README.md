@@ -81,6 +81,9 @@ http://<账号>:<密码>@IP:2088/<token>/all       # v2rayN / 小火箭
 1. 在 Cloudflare 给子域（如 `node.example.com`）加 A 记录 → 你的 VPS IP；
 2. 备一个 CF API Token（权限 `Zone → DNS → Edit`）；
 3. 主菜单 `9) TLS / 域名` → `1)` 填入域名/邮箱/Token → 自动用 acme.sh 走 **DNS-01** 签发 Let's Encrypt 证书（**不占 80/443**），并配好自动续期+重载。
+   - 可顺带填「额外域名/SAN」（空格分隔），例如 `*.example.com node.example.com` —— 一张证书同时覆盖主域+子域；
+   - 已经签过的，改 SAN 不用重填 Token：`9) → 3) 追加/修改 SAN 并重签`（复用 `tls.env` 里已存的 Token）；
+   - `9)` 菜单顶部会直接显示**当前证书实际覆盖的域名列表**，方便核对。
 
 效果（自动完成）：
 - 订阅服务切 HTTPS；
