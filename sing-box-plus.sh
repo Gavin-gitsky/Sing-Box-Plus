@@ -1175,13 +1175,13 @@ banner(){
   hr
   echo -e "  ${C_BLUE}1)${C_RESET} 安装/部署（20 节点）"
   echo -e "  ${C_GREEN}2)${C_RESET} 查看分享链接（IPv4）"
-  echo -e "  ${C_GREEN}6)${C_RESET} 查看分享链接（IPv6）"
-  echo -e "  ${C_GREEN}3)${C_RESET} 重启服务"
-  echo -e "  ${C_GREEN}4)${C_RESET} 一键更换所有端口"
-  echo -e "  ${C_GREEN}5)${C_RESET} 一键开启 BBR"
-  echo -e "  ${C_MAGENTA}7)${C_RESET} 订阅链接（Clash / sing-box / 聚合）"
-  echo -e "  ${C_MAGENTA}9)${C_RESET} TLS / 域名（真证书：订阅HTTPS + 节点）"
-  echo -e "  ${C_RED}8)${C_RESET} 卸载"
+  echo -e "  ${C_GREEN}3)${C_RESET} 查看分享链接（IPv6）"
+  echo -e "  ${C_GREEN}4)${C_RESET} 重启服务"
+  echo -e "  ${C_GREEN}5)${C_RESET} 一键更换所有端口"
+  echo -e "  ${C_GREEN}6)${C_RESET} 一键开启 BBR"
+  echo -e "  ${C_GREEN}7)${C_RESET} 订阅链接（Clash / sing-box / 聚合）"
+  echo -e "  ${C_GREEN}8)${C_RESET} TLS / 域名（真证书：订阅HTTPS + 节点）"
+  echo -e "  ${C_RED}9)${C_RESET} 卸载"
   echo -e "  ${C_RED}0)${C_RESET} 退出"
   hr
 }
@@ -2043,16 +2043,15 @@ menu(){
   exit 0                                          # ← 打印后直接退出
   ;;
   2) if ensure_installed_or_hint; then print_links_grouped 4; exit 0; fi ;;
-
-  6) if ensure_installed_or_hint; then print_links_grouped 6; exit 0; fi ;;
-    3) if ensure_installed_or_hint; then restart_service; fi; read -rp "回车返回..." _ || true; menu ;;
-   4) if ensure_installed_or_hint; then rotate_ports; fi; menu ;;
-    5) enable_bbr; read -rp "回车返回..." _ || true; menu ;;
-    7) sub_menu; read -rp "回车返回..." _ || true; menu ;;
-    9) tls_menu; read -rp "回车返回..." _ || true; menu ;;
-    8) uninstall_all ;; # 直接退出
-    0) exit 0 ;;
-    *) menu ;;
+  3) if ensure_installed_or_hint; then print_links_grouped 6; exit 0; fi ;;
+  4) if ensure_installed_or_hint; then restart_service; fi; read -rp "回车返回..." _ || true; menu ;;
+  5) if ensure_installed_or_hint; then rotate_ports; fi; menu ;;
+  6) enable_bbr; read -rp "回车返回..." _ || true; menu ;;
+  7) sub_menu; read -rp "回车返回..." _ || true; menu ;;
+  8) tls_menu; read -rp "回车返回..." _ || true; menu ;;
+  9) uninstall_all ;; # 直接退出
+  0) exit 0 ;;
+  *) menu ;;
   esac
 }
 
