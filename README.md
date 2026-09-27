@@ -122,6 +122,19 @@ http://<账号>:<密码>@IP:2088/<token>/all       # v2rayN / 小火箭
 | `Error add txt for domain` | 该域名不是本账号的 zone，或 Token 只有 Read 权限 |
 | `redundant with a wildcard domain in the same request` | 一张证书里既写了 `*.example.com` 又写了它的子域（脚本已自动去重，不会再现） |
 
+## 🧭 客户端分流（已内置，开箱即用）
+
+订阅里已经带好了「国内直连 / 国外走节点」的分流，**客户端不用自己配规则**：
+
+- **sing-box 订阅**：用 `geosite-cn` + `geoip-cn` 规则集，命中→`direct`；国内域名走国内 DNS，其余走代理 DNS
+- **Clash / Mihomo 订阅**：用 `rule-providers`（`cn_domain` + `cn_ipcidr`，mrs 格式），命中→`DIRECT`；另含内网/保留地址直连
+- **规则库由本机订阅服务直接分发**（`/<token>/rules/*`，该路径**免认证**，内容是公开的 geosite/geoip 列表）
+  → 客户端**不需要翻墙去 GitHub 拉规则**，也不会因为拉不到规则而启动失败
+- 规则每 7 天自动刷新一次（重新生成订阅时会检查）；也可手动：主菜单 `7) 订阅链接` → `8) 更新分流规则库并重生成订阅`
+- 若规则库缺失（离线/下载失败）→ **自动退回简单分流**（`.cn` 域名 + 私有 IP 直连），不会让客户端配置失效
+
+> 为什么不把「直连」判定放服务端：国内流量会先绕到 VPS 再“直连”，延迟/流量/隐私全亏，且变成海外 IP 访问国内站。所以——**“进不进代理”放客户端，“走哪个出口”放服务端**（WARP 出口就属于后者）。
+
 ## 客户端导入
 
 - **Clash / Mihomo**（Clash Verge、Mihomo Party、OpenClash…）：订阅地址填 `http://<账号>:<密码>@IP:2088/<token>/clash`
@@ -150,7 +163,7 @@ bash tools/selftest.sh
 
 ## 已知说明
 
-- Clash 订阅里 `GEOIP,CN,DIRECT` 需要客户端有 geoip 数据（mihomo 会自动下载；国内网络建议配好代理后再拉）。
+- ~~Clash 订阅里 `GEOIP,CN,DIRECT` 需要客户端有 geoip 数据~~ → 已改为 `rule-providers`（mrs，由本机分发），**不再依赖客户端本地 geo 数据**；若规则库缺失则退回旧的 `GEOIP,CN` 写法。
 - Hysteria2 / TUIC 用自签证书 → 订阅里默认 `skip-cert-verify: true`（与上游分享链接的 `insecure=1` 一致）。
 - 订阅服务已内置 **Basic 认证 + 随机密钥路径**；若仍不放心，可再挂 Nginx/Caddy 加 TLS（见 Roadmap）。
 - 端口 2088 仅用于**拉订阅**，与 20 个节点端口无冲突。
