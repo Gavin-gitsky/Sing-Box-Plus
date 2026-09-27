@@ -80,6 +80,12 @@ def main():
                       '\n    7) sub_menu; read -rp "回车返回..." _ || true; menu ;;'
                       '\n    9) tls_menu; read -rp "回车返回..." _ || true; menu ;;', 1)
 
+    # 4.5) 进入菜单前自动安装 singbox 快捷命令（幂等）
+    old_menu = 'menu(){\n  banner'
+    if old_menu not in src:
+        sys.exit("找不到 menu 锚点")
+    src = src.replace(old_menu, 'menu(){\n  ensure_shortcut || true\n  banner', 1)
+
     # 5) 安装流程结束后自动生成订阅并起服务
     old_inst = 'systemctl restart "${SYSTEMD_SERVICE}" || true\n  set -e'
     if old_inst not in src:

@@ -1940,8 +1940,26 @@ tls_menu(){
   done
 }
 
+# ---- 快捷命令：自动安装 singbox 软链（输入 singbox 即打开本菜单） ----
+ensure_shortcut(){
+  local dir="${SBP_SHORTCUT_DIR:-/usr/local/bin}" target self
+  self="$(readlink -f -- "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true)"
+  [[ -n "$self" && -f "$self" ]] || return 0
+  case "$(basename "$self")" in
+    *.sh|singbox|*sing-box*|*sing*box*) : ;;
+    *) return 0 ;;
+  esac
+  target="$dir/singbox"
+  [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || return 0
+  [[ -x "$self" ]] || chmod +x "$self" 2>/dev/null || true
+  [[ "$(readlink -f -- "$target" 2>/dev/null || true)" == "$self" ]] && return 0
+  ln -sf "$self" "$target" 2>/dev/null || return 0
+  ok "已装好快捷命令：以后直接输入 ${C_CYAN}singbox${C_RESET} 就能打开本菜单"
+}
+
 # ===== 菜单 =====
 menu(){
+  ensure_shortcut || true
   banner
   read -rp "选择: " op || true
   case "${op:-}" in
