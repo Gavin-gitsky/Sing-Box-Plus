@@ -1595,7 +1595,7 @@ EOF
     printf '%s\n' "${lines[@]}"
     cat <<EOF
 proxy-groups:
-  - {name: '节点选择', type: select, proxies: ['自动选择', '直连节点', 'WARP节点', ${allinner}]}
+  - {name: '节点选择', type: select, proxies: [${allinner}, '自动选择', '直连节点', 'WARP节点']}
   - {name: '自动选择', type: url-test, url: 'http://www.gstatic.com/generate_204', interval: 300, tolerance: 50, proxies: ${alljoined}}
   - {name: '直连节点', type: select, proxies: ${directjoined}}
   - {name: 'WARP节点', type: select, proxies: ${warpjoined}}
@@ -1738,7 +1738,7 @@ gen_singbox_sub(){
         , ss("ss-warp";$PW8;"")
         , tuic("tuic-v5-warp";$PW9;"")
         , anytls("anytls-warp";$PW10;"")
-        , {type:"selector",tag:"节点选择",outbounds:(["自动选择","直连节点","WARP节点"] + all_names),default:"自动选择"}
+        , {type:"selector",tag:"节点选择",outbounds:(all_names + ["自动选择","直连节点","WARP节点"]),default:all_names[0]}
         , {type:"urltest",tag:"自动选择",outbounds:all_names,url:"http://www.gstatic.com/generate_204",interval:"5m",tolerance:50}
         , {type:"selector",tag:"直连节点",outbounds:direct_names}
         , {type:"selector",tag:"WARP节点",outbounds:warp_names}
