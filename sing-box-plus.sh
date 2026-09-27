@@ -1555,13 +1555,9 @@ gen_clash_sub(){
   addp tuic-v5-warp "name: 'tuic-v5-warp', type: tuic, server: '$CH', port: $PORT_TUIC_W, uuid: '$TUIC_UUID', password: '$TUIC_PWD', udp: true, alpn: [h3]${CSK}${TUICS}, congestion-controller: bbr"
   addp anytls-warp "name: 'anytls-warp', type: anytls, server: '$CH', port: $PORT_ANYTLS_W, password: '$ANYTLS_PWD', sni: '$CS'${CSK}, udp: true, client-fingerprint: chrome"
 
-  local allinner directinner warpinner alljoined directjoined warpjoined
+  local allinner alljoined
   allinner=$(printf "'%s', " "${names[@]}"); allinner="${allinner%, }"
-  directinner=$(printf "'%s', " "${names[@]:0:10}"); directinner="${directinner%, }"
-  warpinner=$(printf "'%s', " "${names[@]:10:10}"); warpinner="${warpinner%, }"
   alljoined="[${allinner}]"
-  directjoined="[${directinner}]"
-  warpjoined="[${warpinner}]"
 
   {
     cat <<EOF
@@ -1595,11 +1591,8 @@ EOF
     printf '%s\n' "${lines[@]}"
     cat <<EOF
 proxy-groups:
-  - {name: '节点选择', type: select, proxies: [${allinner}, '自动选择', '直连节点', 'WARP节点']}
-  - {name: '自动选择', type: url-test, url: 'http://www.gstatic.com/generate_204', interval: 300, tolerance: 50, proxies: ${alljoined}}
-  - {name: '直连节点', type: select, proxies: ${directjoined}}
-  - {name: 'WARP节点', type: select, proxies: ${warpjoined}}
-  - {name: '漏网之鱼', type: select, proxies: ['节点选择', '直连节点', '自动选择', DIRECT]}
+  - {name: '节点选择', type: select, proxies: [${allinner}]}
+  - {name: '漏网之鱼', type: select, proxies: ['节点选择', DIRECT]}
 EOF
     if (( ${RULE_MIHOMO:-0} )); then
       local u_dom u_ip
@@ -1738,10 +1731,7 @@ gen_singbox_sub(){
         , ss("ss-warp";$PW8;"")
         , tuic("tuic-v5-warp";$PW9;"")
         , anytls("anytls-warp";$PW10;"")
-        , {type:"selector",tag:"节点选择",outbounds:(all_names + ["自动选择","直连节点","WARP节点"]),default:all_names[0]}
-        , {type:"urltest",tag:"自动选择",outbounds:all_names,url:"http://www.gstatic.com/generate_204",interval:"5m",tolerance:50}
-        , {type:"selector",tag:"直连节点",outbounds:direct_names}
-        , {type:"selector",tag:"WARP节点",outbounds:warp_names}
+        , {type:"selector",tag:"节点选择",outbounds:all_names,default:all_names[0]}
         , {type:"direct",tag:"direct"}
         ],
       route:{
