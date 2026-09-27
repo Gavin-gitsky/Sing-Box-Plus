@@ -79,7 +79,8 @@ http://<账号>:<密码>@IP:2088/<token>/all       # v2rayN / 小火箭
 默认用自签证书，节点里带 `insecure=1`/`skip-cert-verify`。若想彻底消除「不安全/中间人」警告，可一键切真证书（**需一个子域，且域名在 Cloudflare 托管**）：
 
 1. 在 Cloudflare 给子域（如 `node.example.com`）加 A 记录 → 你的 VPS IP；
-2. 备一个 CF API Token（权限 `Zone → DNS → Edit`）；
+   > ⚠️ 该 A 记录必须是 **灰云（DNS only）**，开了小黄云（代理）会导致节点全断。
+2. 备一个 CF API Token（权限 `Zone → DNS → Edit`，建法见下）——**这一步最容易踩坑**；
 3. 主菜单 `9) TLS / 域名` → `1)` 填入域名/邮箱/Token → 自动用 acme.sh 走 **DNS-01** 签发 Let's Encrypt 证书（**不占 80/443**），并配好自动续期+重载。
    - 可顺带填「额外域名/SAN」（空格分隔），例如 `*.example.com node.example.com` —— 一张证书同时覆盖主域+子域；
    - 已经签过的，改 SAN 不用重填 Token：`9) → 3) 追加/修改 SAN 并重签`（复用 `tls.env` 里已存的 Token）；
@@ -91,6 +92,33 @@ http://<账号>:<密码>@IP:2088/<token>/all       # v2rayN / 小火箭
 - 客户端需**重导一次**订阅。
 
 > 域名/Token 存在 `/opt/sing-box/tls.env`（权限 600），不进仓库、不写死。想关掉走 `9) → 2)` 回退自签。
+
+### 🔑 CF API Token 怎么建（照抄即可）
+
+1. 登录 Cloudflare → 右上**头像** → `My Profile` → **`API Tokens`** → **`Create Token`**；
+2. 选模板 **`Edit zone DNS`**（或 `Create Custom Token`），关键是这一行权限：
+   - **Permissions：`Zone` → `DNS` → `Edit`**
+3. **`Zone Resources`：`Include` → `Specific zone` → 选中你的域名**（这一步千万别漏，漏了就报 `Zone not found`）；
+4. `Client IP Address Filtering`、`TTL` **全部留空**（填了的话换机器/换 IP 就失效）；
+5. 建好后 **Token 只显示一次**，立刻复制保存。
+
+**注意项（踩过坑的）**
+
+- ❌ **不要用 Global API Key**（账号级密钥，不安全且 acme 的 `dns_cf` 不认它）；
+- ❌ 粘贴时**别带前后空格 / 换行**（脚本已会自动去掉首尾空白，但尽量别粘错）；
+- ⚠️ 域名必须**已托管在本 CF 账号**（NS 已切到 Cloudflare，可用 `dig NS 你的域名` 核对），否则拿不到该 zone；
+- ⚠️ **DNS-01 不需要你手动配 `_acme-challenge` 的 TXT**，acme.sh 会自动加、签完自动删；
+- ⚠️ 通配符要写成 **`*.example.com`**（`example.com` 本身要单独再写一个 `-d`，菜单里直接空格分隔两个即可）；
+- ⚠️ 如果加了 SAN 只想改覆盖范围：`9) → 3)` 重签即可，**不用重新填 Token**；
+- 🔁 证书到期前 acme.sh 会**自动续期并重载服务**，无需手动管。
+
+**常见报错对照**
+
+| 报错 | 原因 |
+| --- | --- |
+| `Invalid request headers` / `Unable to validate token` | Token 粘错/带空格、权限不对、或用了 Global API Key |
+| `Zone not found` / `No zone found for ...` | `Zone Resources` 没选中该域名，或域名不在这个 CF 账号 |
+| `Error add txt for domain` | 该域名不是本账号的 zone，或 Token 只有 Read 权限 |
 
 ## 客户端导入
 

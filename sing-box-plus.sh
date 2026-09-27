@@ -1324,6 +1324,18 @@ acme_install(){
   [[ -x "$ac" ]] || { err "acme.sh 安装失败（检查网络）"; return 1; }
 }
 
+cf_token_hint(){
+  echo -e "  ${C_DIM}┌─ 创建 Cloudflare API Token（DNS-01 用）────────────────────${C_RESET}"
+  echo -e "  ${C_DIM}│ 1) 控制台右上头像 → My Profile → API Tokens → Create Token${C_RESET}"
+  echo -e "  ${C_DIM}│ 2) 用模板「Edit zone DNS」，或自定义：Permissions = Zone / DNS / Edit${C_RESET}"
+  echo -e "  ${C_DIM}│ 3) Zone Resources = Include → Specific zone → 选中你的域名（必选！）${C_RESET}"
+  echo -e "  ${C_DIM}│ 4) Client IP Address Filtering / TTL 都留空，否则换机换IP就失效${C_RESET}"
+  echo -e "  ${C_DIM}│ 5) ⚠ 不要用 Global API Key（不兼容）；Token 只显示一次，建好立刻复制${C_RESET}"
+  echo -e "  ${C_DIM}│ 6) 粘贴时别带前后空格/换行；域名必须已托管在本 CF 账号（NS 已切）${C_RESET}"
+  echo -e "  ${C_DIM}│ 7) DNS-01 会自动加 _acme-challenge 的 TXT 记录，无需你手动配 A 记录${C_RESET}"
+  echo -e "  ${C_DIM}└─ 常见报错：Invalid/Unable to validate token=粘错或权限不对 · Zone not found=Zone Resources 没选对${C_RESET}"
+}
+
 acme_issue(){
   acme_install || return 1
   local ac="$HOME/.acme.sh/acme.sh"
@@ -1340,7 +1352,12 @@ acme_issue(){
     info "向 Let's Encrypt 申请证书：$TLS_DOMAIN （DNS-01，走 Cloudflare API，不占 80/443）"
   fi
   "$ac" --issue --dns dns_cf "${dargs[@]}" --keylength ec-256 --server letsencrypt || {
-    err "证书申请失败：请确认①域名已在 Cloudflare；②Token 权限为 Zone→DNS→Edit；③该子域存在（通配符用 *.域名）"
+    err "证书申请失败，逐项核对："
+    err "  ① 域名已托管在本 CF 账号（NS 已切到 Cloudflare，可用 dig NS 域名 确认）"
+    err "  ② Token 权限 = Zone→DNS→Edit，且 Zone Resources 里勾选了这个域名"
+    err "  ③ 粘贴的 Token 无前后空格/换行；没用 Global API Key；Token 未过期/未撤销"
+    err "  ④ 通配符要写成 *.域名；子域无需提前配 A 记录（DNS-01 只加 TXT）"
+    cf_token_hint
     return 1; }
   "$ac" --install-cert -d "$TLS_DOMAIN" --ecc \
     --key-file "$CERT_DIR/key.pem" --fullchain-file "$CERT_DIR/fullchain.pem" \
@@ -1933,7 +1950,9 @@ tls_menu(){
       1) read -rp "域名 (如 node.ezynode.net): " td || true
          [[ -n "$td" ]] || { warn "域名不能为空"; read -rp "回车返回..." _ || true; continue; }
          read -rp "邮箱 (Let's Encrypt 通知用): " te || true
+         cf_token_hint
          read -rsp "Cloudflare API Token (Zone:DNS:Edit): " tk || true; echo
+         tk="${tk//[$'\r'$'\n']/}"; tk="${tk#"${tk%%[![:space:]]*}"}"; tk="${tk%"${tk##*[![:space:]]}"}"
          [[ -n "$tk" ]] || { warn "Token 不能为空"; read -rp "回车返回..." _ || true; continue; }
          read -rp "额外域名/SAN（空格分隔，可留空；如 *.ezylink.cc.cd node.ezylink.cc.cd）: " ts || true
          TLS_DOMAIN="$td"; TLS_EMAIL="$te"; TLS_CF_TOKEN="$tk"; TLS_SAN="${ts// /,}"; write_tls_env
