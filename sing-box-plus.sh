@@ -785,34 +785,39 @@ PYEOF
 
   # proxy 模式：不改系统默认路由
   warp-cli mode proxy >/dev/null 2>&1 || true
+  # 新版 warp-cli（2024+）支持显式指定代理端口，防止默认端口与脚本预期不一致
+  warp-cli proxy port "$WARP_SOCKS_PORT" >/dev/null 2>&1 || true
 
   # 连接
   warp-cli connect >/dev/null 2>&1 || return 1
 
-  # 等待 socks 端口监听
-  for i in {1..12}; do
+  # 等待 socks 端口就绪 + 真实探测 warp=on（新版 warp-cli 拉起代理可能要 30~60s，
+  # 原来的固定 12s 会"假失败"：端口稍后才起，但脚本已经报错返回）
+  local socks_ok=0 i
+  for i in {1..60}; do
     if ss -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b" || netstat -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b"; then
-      break
+      if curl -fsSL --max-time 8 --proxy "socks5://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}" https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
+        socks_ok=1; break
+      fi
     fi
+    (( i % 15 == 0 )) && info "等待 WARP 代理就绪…（已 ${i}s / 最多 60s）"
     sleep 1
   done
 
-  if !( ss -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b" || netstat -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b" ); then
-    err "WARP SOCKS5 端口 ${WARP_SOCKS_PORT} 未监听（warp-svc/warp-cli 可能未正常工作）"
-    systemctl status warp-svc --no-pager | head -80 || true
-    journalctl -u warp-svc -n 120 --no-pager || true
-    return 1
+  if (( socks_ok )); then
+    ok "WARP proxy 已就绪：socks5://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}"
+    return 0
   fi
 
-  # 真正测试 warp=on
-  if ! curl -fsSL --proxy "socks5://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}" https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
-    err "WARP 代理测试失败：未检测到 warp=on"
-    warp-cli status || true
-    return 1
+  # 探测失败只告警（不再硬失败）：端口在但没探测到 warp=on 属于"还在连"，端口不在才是真异常
+  if ss -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b" || netstat -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b"; then
+    warn "WARP SOCKS5 端口 ${WARP_SOCKS_PORT} 在监听，但未探测到 warp=on（可能仍在连接，稍后会自动就绪；WARP 节点暂不可用）"
+  else
+    warn "WARP SOCKS5 端口 ${WARP_SOCKS_PORT} 未监听（warp-svc/warp-cli 可能未正常工作；WARP 节点暂不可用）"
+    systemctl status warp-svc --no-pager 2>/dev/null | head -40 || true
   fi
-
-  ok "WARP proxy 已就绪：socks5://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}"
-  return 0
+  warp-cli status 2>/dev/null | head -5 || true
+  return 1
 }
 
 # ===== WARP（wgcf）配置生成/修复（已废弃/不再默认使用，保留旧代码以兼容历史） =====
@@ -969,7 +974,7 @@ systemctl enable "${SYSTEMD_SERVICE}" >/dev/null 2>&1 || true
 write_config(){
   ensure_dirs; load_env || true; load_creds || true; load_ports || true
   ensure_creds; save_all_ports; mk_cert
-  [[ "$ENABLE_WARP" == "true" ]] && ensure_warpcli_proxy
+  [[ "$ENABLE_WARP" == "true" ]] && { ensure_warpcli_proxy || true; }   # WARP 异常不再拖垮配置生成
 
   local CRT="$CERT_DIR/fullchain.pem" KEY="$CERT_DIR/key.pem"
   jq -n \
