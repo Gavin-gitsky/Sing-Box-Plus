@@ -370,6 +370,22 @@ safe_source_env(){ # 安全 source，忽略不存在文件
   set -u
 }
 
+# 避免 `cmd | grep -q` 在 pipefail 下“假失败”：grep -q 一命中就退出 → 上游收到 SIGPIPE(141) → 管道整体算失败
+pipe_has(){ # 用法: cmd | pipe_has "正则"
+  local pat="$1" buf
+  buf=$(cat)
+  [[ "$buf" =~ $pat ]]
+}
+
+# 端口是否在 LISTEN（ss/netstat，精确匹配端口号，避免 :4000 误命中 :40000；不走管道）
+port_listening(){
+  local p="${1:-}" out=""
+  [[ -n "$p" ]] || return 1
+  out=$(ss -lntp 2>/dev/null || true)
+  [[ -z "$out" ]] && out=$(netstat -lntp 2>/dev/null || true)
+  [[ "$out" =~ :${p}([^0-9]|$) ]]
+}
+
 get_ip4(){ # 多源获取公网 IPv4
   local ip
   ip=$(curl -4 -fsSL ipv4.icanhazip.com 2>/dev/null || true)
@@ -793,10 +809,11 @@ PYEOF
 
   # 等待 socks 端口就绪 + 真实探测 warp=on（新版 warp-cli 拉起代理可能要 30~60s，
   # 原来的固定 12s 会"假失败"：端口稍后才起，但脚本已经报错返回）
-  local socks_ok=0 i
+  local socks_ok=0 i trace
   for i in {1..60}; do
-    if ss -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b" || netstat -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b"; then
-      if curl -fsSL --max-time 8 --proxy "socks5://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}" https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
+    if port_listening "$WARP_SOCKS_PORT"; then
+      trace=$(curl -fsSL --max-time 8 --proxy "socks5://${WARP_SOCKS_HOST}:${WARP_SOCKS_PORT}" https://cloudflare.com/cdn-cgi/trace 2>/dev/null || true)
+      if [[ "$trace" == *"warp=on"* ]]; then
         socks_ok=1; break
       fi
     fi
@@ -810,7 +827,7 @@ PYEOF
   fi
 
   # 探测失败只告警（不再硬失败）：端口在但没探测到 warp=on 属于"还在连"，端口不在才是真异常
-  if ss -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b" || netstat -lntp 2>/dev/null | grep -q ":${WARP_SOCKS_PORT}\b"; then
+  if port_listening "$WARP_SOCKS_PORT"; then
     warn "WARP SOCKS5 端口 ${WARP_SOCKS_PORT} 在监听，但未探测到 warp=on（可能仍在连接，稍后会自动就绪；WARP 节点暂不可用）"
   else
     warn "WARP SOCKS5 端口 ${WARP_SOCKS_PORT} 未监听（warp-svc/warp-cli 可能未正常工作；WARP 节点暂不可用）"
@@ -1073,7 +1090,7 @@ open_firewall(){
   rules+=("${PORT_SS2022_W}/tcp" "${PORT_SS2022_W}/udp" "${PORT_SS_W}/tcp" "${PORT_SS_W}/udp")
   rules+=("${PORT_ANYTLS_W}/tcp")
 
-  if command -v ufw >/dev/null 2>&1 && ufw status | grep -q -E "active|活跃"; then
+  if command -v ufw >/dev/null 2>&1 && ufw status | pipe_has "active|活跃"; then
     for r in "${rules[@]}"; do ufw allow "$r" >/dev/null 2>&1 || true; done
     ufw reload >/dev/null 2>&1 || true
 
@@ -1864,7 +1881,7 @@ serve_subs_stop(){
 }
 
 open_sub_firewall(){
-  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q -E "active|活跃"; then
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | pipe_has "active|活跃"; then
     ufw allow "${SUB_PORT}/tcp" >/dev/null 2>&1 || true; ufw reload >/dev/null 2>&1 || true
   elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     firewall-cmd --permanent --add-port="${SUB_PORT}/tcp" >/dev/null 2>&1 || true; firewall-cmd --reload >/dev/null 2>&1 || true
