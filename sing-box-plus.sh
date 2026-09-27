@@ -1555,6 +1555,14 @@ gen_clash_sub(){
   addp tuic-v5-warp "name: 'tuic-v5-warp', type: tuic, server: '$CH', port: $PORT_TUIC_W, uuid: '$TUIC_UUID', password: '$TUIC_PWD', udp: true, alpn: [h3]${CSK}${TUICS}, congestion-controller: bbr"
   addp anytls-warp "name: 'anytls-warp', type: anytls, server: '$CH', port: $PORT_ANYTLS_W, password: '$ANYTLS_PWD', sni: '$CS'${CSK}, udp: true, client-fingerprint: chrome"
 
+  # 首选节点提到首位 → 客户端「节点选择」默认落点（老大 2026-09-27 实测：hysteria2-obfs 最快）
+  local PREFERRED_NODE="${PREFERRED_NODE:-hysteria2-obfs}" _pn _pfirst=""
+  local -a _prest=()
+  for _pn in "${names[@]}"; do
+    if [[ "$_pn" == "$PREFERRED_NODE" && -z "$_pfirst" ]]; then _pfirst="$_pn"; else _prest+=("$_pn"); fi
+  done
+  [[ -n "$_pfirst" ]] && names=("$_pfirst" "${_prest[@]}")
+
   local allinner alljoined
   allinner=$(printf "'%s', " "${names[@]}"); allinner="${allinner%, }"
   alljoined="[${allinner}]"
@@ -1702,8 +1710,8 @@ gen_singbox_sub(){
     def anytls($t;$p;$suffix):
       {type:"anytls",tag:$t,server:$TH,server_port:$p,password:$ANYTLS,
        tls:{enabled:true,insecure:$INC,server_name:$TS}};
-    def all_names: ["vless-reality","vless-grpc-reality","trojan-reality","vmess-ws","hysteria2","hysteria2-obfs","ss2022","ss","tuic-v5","anytls",
-                    "vless-reality-warp","vless-grpc-reality-warp","trojan-reality-warp","vmess-ws-warp","hysteria2-warp","hysteria2-obfs-warp","ss2022-warp","ss-warp","tuic-v5-warp","anytls-warp"];
+    def all_names: ["hysteria2-obfs","vless-reality","vless-grpc-reality","trojan-reality","vmess-ws","hysteria2","ss2022","ss","tuic-v5","anytls",
+                    "hysteria2-obfs-warp","vless-reality-warp","vless-grpc-reality-warp","trojan-reality-warp","vmess-ws-warp","hysteria2-warp","ss2022-warp","ss-warp","tuic-v5-warp","anytls-warp"];
     def direct_names: ["vless-reality","vless-grpc-reality","trojan-reality","vmess-ws","hysteria2","hysteria2-obfs","ss2022","ss","tuic-v5","anytls"];
     def warp_names: ["vless-reality-warp","vless-grpc-reality-warp","trojan-reality-warp","vmess-ws-warp","hysteria2-warp","hysteria2-obfs-warp","ss2022-warp","ss-warp","tuic-v5-warp","anytls-warp"];
     {

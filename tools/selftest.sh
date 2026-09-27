@@ -87,9 +87,11 @@ print("clash group names:", [g['name'] for g in c['proxy-groups']])
 print("first proxy:", json.dumps(c['proxies'][0], ensure_ascii=False))
 print("node-select refs ok:", set(c['proxy-groups'][0]['proxies']) <= {p['name'] for p in c['proxies']})
 print("no auto groups:", not ({'自动选择','直连节点','WARP节点'} & {g['name'] for g in c['proxy-groups']}))
+print("clash default node:", c['proxy-groups'][0]['proxies'][0])
 s = json.load(open('/tmp/sbtest/sub/singbox.json'))
 print("singbox outbounds:", len(s['outbounds']), "final:", s['route']['final'])
 print("singbox groups:", [o['tag'] for o in s['outbounds'] if o['type'] in ('selector','urltest')])
+print("singbox default node:", [o.get('default') for o in s['outbounds'] if o.get('tag')=='节点选择'])
 tags = [o['tag'] for o in s['outbounds']]
 for o in s['outbounds']:
     if o['type'] in ('selector','urltest'):
