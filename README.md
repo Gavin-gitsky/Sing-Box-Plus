@@ -109,6 +109,7 @@ http://<账号>:<密码>@IP:2088/<token>/all       # v2rayN / 小火箭
 - ⚠️ 域名必须**已托管在本 CF 账号**（NS 已切到 Cloudflare，可用 `dig NS 你的域名` 核对），否则拿不到该 zone；
 - ⚠️ **DNS-01 不需要你手动配 `_acme-challenge` 的 TXT**，acme.sh 会自动加、签完自动删；
 - ⚠️ 通配符要写成 **`*.example.com`**（`example.com` 本身要单独再写一个 `-d`，菜单里直接空格分隔两个即可）；
+- ⚠️ **别同时写 `*.example.com` 和它的子域**（如 `node.example.com`）——Let's Encrypt 会报 `redundant with a wildcard domain`；本脚本**已自动去重**（识别到通配符就丢掉被它覆盖的子域），但填写时选一种更干净；
 - ⚠️ 如果加了 SAN 只想改覆盖范围：`9) → 3)` 重签即可，**不用重新填 Token**；
 - 🔁 证书到期前 acme.sh 会**自动续期并重载服务**，无需手动管。
 
@@ -119,6 +120,7 @@ http://<账号>:<密码>@IP:2088/<token>/all       # v2rayN / 小火箭
 | `Invalid request headers` / `Unable to validate token` | Token 粘错/带空格、权限不对、或用了 Global API Key |
 | `Zone not found` / `No zone found for ...` | `Zone Resources` 没选中该域名，或域名不在这个 CF 账号 |
 | `Error add txt for domain` | 该域名不是本账号的 zone，或 Token 只有 Read 权限 |
+| `redundant with a wildcard domain in the same request` | 一张证书里既写了 `*.example.com` 又写了它的子域（脚本已自动去重，不会再现） |
 
 ## 客户端导入
 

@@ -1340,14 +1340,25 @@ acme_issue(){
   acme_install || return 1
   local ac="$HOME/.acme.sh/acme.sh"
   export CF_Token="$TLS_CF_TOKEN"
-  local san; local -a dargs=(-d "$TLS_DOMAIN")
+  local san; local -a doms=("$TLS_DOMAIN") final=() dargs=()
   local IFS=','
   for san in $TLS_SAN; do
     san="${san// /}"
-    [[ -n "$san" && "$san" != "$TLS_DOMAIN" ]] && dargs+=(-d "$san")
+    [[ -n "$san" && "$san" != "$TLS_DOMAIN" ]] && doms+=("$san")
   done
+  # 去掉被同一张证书里通配符覆盖的子域（否则 Let's Encrypt 报 redundant with a wildcard domain）
+  local d w covered
+  for d in "${doms[@]}"; do
+    covered=0
+    case "$d" in
+      \*.*) ;;
+      *) for w in "${doms[@]}"; do case "$w" in \*.*) [[ "$d" == *".${w#\*.}" ]] && { covered=1; break; } ;; esac; done ;;
+    esac
+    (( covered )) || final+=("$d")
+  done
+  for d in "${final[@]}"; do dargs+=(-d "$d"); done
   if [[ ${#dargs[@]} -gt 2 ]]; then
-    info "向 Let's Encrypt 申请证书：$TLS_DOMAIN ［含 SAN：$TLS_SAN］（DNS-01，走 Cloudflare API，不占 80/443）"
+    info "向 Let's Encrypt 申请证书：${final[*]}（DNS-01，走 Cloudflare API，不占 80/443）"
   else
     info "向 Let's Encrypt 申请证书：$TLS_DOMAIN （DNS-01，走 Cloudflare API，不占 80/443）"
   fi
@@ -1357,6 +1368,7 @@ acme_issue(){
     err "  ② Token 权限 = Zone→DNS→Edit，且 Zone Resources 里勾选了这个域名"
     err "  ③ 粘贴的 Token 无前后空格/换行；没用 Global API Key；Token 未过期/未撤销"
     err "  ④ 通配符要写成 *.域名；子域无需提前配 A 记录（DNS-01 只加 TXT）"
+    err "  ⑤ 别同时写 *.域名 和 它的子域（LE 会报 redundant，本脚本已自动去重）"
     cf_token_hint
     return 1; }
   "$ac" --install-cert -d "$TLS_DOMAIN" --ecc \
