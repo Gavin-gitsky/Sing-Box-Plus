@@ -1148,6 +1148,10 @@ print_links_grouped(){
   echo -e "  sing-box 订阅     : ${sbase}/singbox"
   echo -e "  通用聚合(base64)  : ${sbase}/all"
   echo -e "  聚合页(全部链接)  : ${sbase}/"
+  if [[ -n "${PANEL_USER:-}" && -n "${PANEL_PASS:-}" ]]; then
+    echo -e "  面板登录账号     : ${C_BOLD}${PANEL_USER}${C_RESET} / ${C_BOLD}${PANEL_PASS}${C_RESET}"
+    echo -e "${C_DIM}  面板口令只用于浏览器登录，改它不影响客户端订阅；登录后可在页面内修改${C_RESET}"
+  fi
   echo -e "${C_DIM}  订阅服务未启动？主菜单选 7) 订阅链接 一键启动${C_RESET}"
   hr
   if ! tls_on; then
@@ -1818,7 +1822,7 @@ gen_all_sub(){
  .item span{flex:1;word-break:break-all;color:#c9d1d9}
  .item button{background:#30363d;color:#e6e6e6;border:0;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer}
 </style></head><body>
-<h1>Sing-Box-Plus · 聚合订阅 <a href="${base}/logout" style="float:right;font-size:12px;font-weight:400;color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px">退出登录</a></h1>
+<h1>Sing-Box-Plus · 聚合订阅 <a href="${base}/logout" style="float:right;font-size:12px;font-weight:400;color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px">退出登录</a><a href="${base}/admin/password" style="float:right;margin-right:8px;font-size:12px;font-weight:400;color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px">修改密码</a></h1>
 <div class="sub">服务器 <b>${PUB_IP}</b> · 生成时间 $(date '+%Y-%m-%d %H:%M:%S') · 共 20 个节点（直连 10 + WARP 10）</div>
 <div class="sub" style="color:#6e7681">本页需登录；订阅链接本身对客户端长期有效，泄露可一键重置 token</div>
 
@@ -1885,6 +1889,8 @@ SUB_SECRET = os.environ.get('SUB_SECRET', '') or (SUB_PASS + '|sbp-session')
 # 面板登录凭据（与订阅 Basic 分离：改它不影响客户端订阅链接）
 PANEL_USER = os.environ.get('PANEL_USER', '') or SUB_USER
 PANEL_PASS = os.environ.get('PANEL_PASS', '') or SUB_PASS
+ENV_FILE  = os.environ.get('SUB_ENV_FILE', '/opt/sing-box/sub.secret.env')
+SESSION_EPOCH = int(os.environ.get('PANEL_PWD_TS', '0') or 0)
 SESSION_TTL = int(os.environ.get('SESSION_TTL', '43200'))   # 12h
 LOG_FILE   = os.environ.get('SUB_LOG', '/var/log/sbp-sub-access.log')
 ALIAS = {'clash': 'clash.yaml', 'singbox': 'singbox.json'}
@@ -1914,6 +1920,29 @@ LOGIN_HTML = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 </form></div></body></html>"""
 
 
+PWD_HTML = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>修改密码</title>
+<style>
+ body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#0f1115;color:#e6e6e6;
+      display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+ .box{background:#171a21;border:1px solid #232833;border-radius:12px;padding:26px 24px;width:340px}
+ h1{font-size:17px;margin:0 0 4px} p{color:#8b949e;font-size:12px;margin:0 0 16px}
+ input{width:100%;box-sizing:border-box;background:#0b0e13;border:1px solid #2b313c;color:#e6e6e6;
+       border-radius:8px;padding:9px 10px;font-size:14px;margin-bottom:10px}
+ button{width:100%;background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:10px;font-size:14px;cursor:pointer}
+ a{color:#8b949e;font-size:12px;text-decoration:none;display:block;text-align:center;margin-top:12px}
+ .err{color:#f85149;font-size:12px;margin-bottom:10px} .ok{color:#7ee787;font-size:13px;margin-bottom:10px}
+</style></head><body><div class="box"><h1>修改面板密码</h1>
+<p>只影响本页面登录，不影响客户端订阅</p>
+{msg}
+<form method="POST" action="{action}">
+ <input name="old" type="password" placeholder="当前密码" autocomplete="current-password">
+ <input name="new1" type="password" placeholder="新密码（至少 8 位）" autocomplete="new-password">
+ <input name="new2" type="password" placeholder="再输一次新密码" autocomplete="new-password">
+ <button type="submit">保存并重新登录</button>
+</form><a href="{home}">← 返回聚合页</a></div></body></html>"""
+
+
 def _now():
     return int(time.time())
 
@@ -1924,17 +1953,17 @@ def _sign(payload: str) -> str:
 
 def make_session() -> str:
     exp = _now() + SESSION_TTL
-    payload = 'v1.%d.%s' % (exp, hashlib.sha256(SUB_SECRET.encode()).hexdigest()[:8])
+    payload = 'v1.%d.%d.%s' % (exp, SESSION_EPOCH, hashlib.sha256(SUB_SECRET.encode()).hexdigest()[:8])
     return payload + '.' + _sign(payload)
 
 
 def check_session(tok: str) -> bool:
     try:
-        v, exp_s, tag, sig = tok.split('.')
-        payload = '.'.join((v, exp_s, tag))
+        v, exp_s, epoch, tag, sig = tok.split('.')
+        payload = '.'.join((v, exp_s, epoch, tag))
         if not hmac.compare_digest(_sign(payload), sig):
             return False
-        return int(exp_s) > _now()
+        return int(exp_s) > _now() and int(epoch) == SESSION_EPOCH
     except Exception:
         return False
 
@@ -2089,6 +2118,14 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
             return
 
+        # /admin/password —— 改面板密码（需已登录）
+        if internal == '/admin/password':
+            if not self._cookie_ok():
+                self._audit(raw, 401, 'none')
+                return self._send_html(401, self._login_page('请先登录'))
+            self._audit(raw, 200, 'session')
+            return self._send_html(200, self._pwd_page())
+
         # /logout
         if internal == '/logout':
             self._audit(raw, 302, 'session')
@@ -2131,9 +2168,18 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Content-Length', '0')
         self.end_headers()
 
+    def _pwd_page(self, msg='', ok=False):
+        action = ('/' + SUB_PATH + '/admin/password') if SUB_PATH else '/admin/password'
+        home = ('/' + SUB_PATH + '/') if SUB_PATH else '/'
+        cls = 'ok' if ok else 'err'
+        m = ('<div class="%s">%s</div>' % (cls, html.escape(msg))) if msg else ''
+        return PWD_HTML.replace('{action}', action).replace('{home}', home).replace('{msg}', m)
+
     def do_POST(self):
         raw = self._raw_path()
         internal = self._strip_prefix(raw)
+        if internal == '/admin/password':
+            return self._do_change_pwd(raw)
         if internal != '/login':
             self._audit(raw, 404, 'none')
             return self.send_error(404, 'Not Found')
@@ -2165,6 +2211,65 @@ class Handler(SimpleHTTPRequestHandler):
         self._note_fail(ip)
         self._audit(raw, 401, 'none')
         self._send_html(401, self._login_page('用户名或密码错误'))
+
+    def _do_change_pwd(self, raw):
+        global PANEL_PASS, SESSION_EPOCH
+        ip = self.client_address[0]
+        if not self._cookie_ok():
+            self._audit(raw, 401, 'none')
+            return self._send_html(401, self._login_page('请先登录'))
+        if self._locked(ip):
+            self._audit(raw, 429, 'session')
+            return self._send_html(429, self._pwd_page('尝试过多，请 15 分钟后再试'))
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+            body = self.rfile.read(min(n, 4096)).decode('utf-8', 'replace')
+            q = urllib.parse.parse_qs(body)
+            old = (q.get('old') or [''])[0]
+            n1 = (q.get('new1') or [''])[0]
+            n2 = (q.get('new2') or [''])[0]
+        except Exception:
+            old = n1 = n2 = ''
+        if not hmac.compare_digest(old, PANEL_PASS):
+            self._note_fail(ip)
+            self._audit(raw, 400, 'session')
+            return self._send_html(400, self._pwd_page('当前密码不对'))
+        if len(n1) < 8:
+            self._audit(raw, 400, 'session')
+            return self._send_html(400, self._pwd_page('新密码至少 8 位'))
+        if n1 != n2:
+            self._audit(raw, 400, 'session')
+            return self._send_html(400, self._pwd_page('两次输入不一致'))
+        if n1 == PANEL_PASS:
+            self._audit(raw, 400, 'session')
+            return self._send_html(400, self._pwd_page('新密码和旧的一样'))
+        # 写回 env 文件（保留其它键）
+        try:
+            lines = []
+            if os.path.exists(ENV_FILE):
+                with open(ENV_FILE, 'r', encoding='utf-8') as f:
+                    lines = [l for l in f.read().splitlines()
+                             if not l.startswith(('PANEL_PASS=', 'PANEL_PWD_TS='))]
+            SESSION_EPOCH = _now()
+            lines += ['PANEL_PASS=' + n1, 'PANEL_PWD_TS=%d' % SESSION_EPOCH]
+            tmp = ENV_FILE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, ENV_FILE)
+            PANEL_PASS = n1
+        except Exception as e:
+            self._audit(raw, 500, 'session')
+            return self._send_html(500, self._pwd_page('写入配置失败: %s' % e))
+        # 所有旧会话立即失效，回登录页
+        _FAILS.pop(ip, None)
+        self._audit(raw, 302, 'session')
+        self.send_response(302)
+        self.send_header('Location', ('/' + SUB_PATH + '/') if SUB_PATH else '/')
+        self.send_header('Set-Cookie', 'sbp_sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax')
+        self._headers()
+        self.send_header('Content-Length', '0')
+        self.end_headers()
 
     def do_HEAD(self):
         if self._basic_ok() or self._cookie_ok():

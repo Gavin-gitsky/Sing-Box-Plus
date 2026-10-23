@@ -199,3 +199,13 @@ bash tools/selftest.sh
 - 两者**互相独立**：改面板密码不影响任何客户端订阅链接；改订阅密码才会让客户端链接失效。
 - 配置存放：`/opt/sing-box/sub.secret.env`（0600，systemd `EnvironmentFile`），改完 `systemctl restart sbp-sub` 即生效。
 - 未配置 `PANEL_*` 时自动回退到 `SUB_*`（向后兼容）。
+
+### 面板密码的生成 / 自定义 / 修改（2026-10-24）
+
+- **生成**：首次跑订阅模块时自动生成 `PANEL_USER`(默认 `gavin`) + 16 位随机 `PANEL_PASS`，并写进 `sub.env`；分享链接汇总里会**直接打印**这组账号。
+- **自定义**：跑脚本前预设环境变量即可，例如
+  `PANEL_USER=gavin PANEL_PASS=你的密码 bash sing-box-plus.sh`
+- **登录后修改**：登录聚合页 → 右上角「修改密码」→ 验旧密码 + 新密码 ≥8 位 + 两次一致。
+  - 改完**所有旧会话立即失效**（强制重新登录）
+  - 只改 `PANEL_PASS`，`SUB_PASS` 不动，客户端零影响
+  - 写回 `/opt/sing-box/sub.secret.env`（0600），重启后依然有效（`PANEL_PWD_TS` 记录改密时间戳用于作废旧 cookie）
