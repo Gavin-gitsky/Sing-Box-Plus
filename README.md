@@ -191,3 +191,11 @@ bash tools/selftest.sh
 - **加固**：关闭目录遍历、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、TLS 下自动加 HSTS。
 - **审计**：访问记录写 `/var/log/sbp-sub-access.log`（JSONL），可 `GET /admin/access`（需登录）查看最近 200 条，含来源 IP / 路径 / UA / 是否认证。
 - 会话密钥 `SUB_SECRET` 首次生成后写入 `sub.env`，重跑脚本不会变（不会把大家登出）。
+
+### 面板登录凭据与订阅 Basic 分离（2026-10-24）
+
+- `PANEL_USER` / `PANEL_PASS`（默认 `gavin` + 随机 16 位）只用于**聚合页登录**；
+- `SUB_USER` / `SUB_PASS` 只用于**订阅 Basic**（客户端链接里的那段）；
+- 两者**互相独立**：改面板密码不影响任何客户端订阅链接；改订阅密码才会让客户端链接失效。
+- 配置存放：`/opt/sing-box/sub.secret.env`（0600，systemd `EnvironmentFile`），改完 `systemctl restart sbp-sub` 即生效。
+- 未配置 `PANEL_*` 时自动回退到 `SUB_*`（向后兼容）。

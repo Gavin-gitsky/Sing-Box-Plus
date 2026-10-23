@@ -1275,6 +1275,8 @@ SUB_PORT=${SUB_PORT:-2088}
 SUB_SERVICE=${SUB_SERVICE:-sbp-sub.service}
 SUB_USER=${SUB_USER:-}
 SUB_SECRET=${SUB_SECRET:-}
+PANEL_USER=${PANEL_USER:-}
+PANEL_PASS=${PANEL_PASS:-}
 SUB_PASS=${SUB_PASS:-}
 SUB_PATH=${SUB_PATH:-}
 
@@ -1299,8 +1301,8 @@ sub_base(){
 write_sub_env(){
   mkdir -p "$SB_DIR"
   local tmp; tmp="$(mktemp "${SB_DIR}/sub.env.XXXXXX")"
-  { { [[ -f "$SB_DIR/sub.env" ]] && grep -v -E '^(SUB_PORT|SUB_USER|SUB_PASS|SUB_PATH|SUB_SECRET)=' "$SB_DIR/sub.env" || true; } \
-    ; printf 'SUB_PORT=%s\nSUB_USER=%s\nSUB_PASS=%s\nSUB_PATH=%s\nSUB_SECRET=%s\n' "$SUB_PORT" "$SUB_USER" "$SUB_PASS" "$SUB_PATH" "$SUB_SECRET"; } > "$tmp"
+  { { [[ -f "$SB_DIR/sub.env" ]] && grep -v -E '^(SUB_PORT|SUB_USER|SUB_PASS|SUB_PATH|SUB_SECRET|PANEL_USER|PANEL_PASS)=' "$SB_DIR/sub.env" || true; } \
+    ; printf 'SUB_PORT=%s\nSUB_USER=%s\nSUB_PASS=%s\nSUB_PATH=%s\nSUB_SECRET=%s\nPANEL_USER=%s\nPANEL_PASS=%s\n' "$SUB_PORT" "$SUB_USER" "$SUB_PASS" "$SUB_PATH" "$SUB_SECRET" "$PANEL_USER" "$PANEL_PASS"; } > "$tmp"
   mv "$tmp" "$SB_DIR/sub.env"
 }
 
@@ -1310,6 +1312,9 @@ ensure_sub_secrets(){
   [[ -n "$SUB_PASS" ]] || { SUB_PASS="$(gen_sub_pass)"; changed=1; }
   [[ -n "$SUB_PATH" ]] || { SUB_PATH="$(gen_sub_path)"; changed=1; }
   [[ -n "$SUB_SECRET" ]] || { SUB_SECRET="$(rand_hex 32)"; changed=1; }
+  # 面板登录凭据（独立于订阅 Basic，改它不影响客户端）
+  [[ -n "$PANEL_USER" ]] || { PANEL_USER="gavin"; changed=1; }
+  [[ -n "$PANEL_PASS" ]] || { PANEL_PASS="$(gen_sub_pass)"; changed=1; }
   [[ "$changed" == "1" ]] && write_sub_env
   return 0
 }
@@ -1877,6 +1882,9 @@ SUB_USER   = os.environ.get('SUB_USER', '')
 SUB_PASS   = os.environ.get('SUB_PASS', '')
 SUB_PATH   = os.environ.get('SUB_PATH', '').strip('/')
 SUB_SECRET = os.environ.get('SUB_SECRET', '') or (SUB_PASS + '|sbp-session')
+# 面板登录凭据（与订阅 Basic 分离：改它不影响客户端订阅链接）
+PANEL_USER = os.environ.get('PANEL_USER', '') or SUB_USER
+PANEL_PASS = os.environ.get('PANEL_PASS', '') or SUB_PASS
 SESSION_TTL = int(os.environ.get('SESSION_TTL', '43200'))   # 12h
 LOG_FILE   = os.environ.get('SUB_LOG', '/var/log/sbp-sub-access.log')
 ALIAS = {'clash': 'clash.yaml', 'singbox': 'singbox.json'}
@@ -2141,7 +2149,7 @@ class Handler(SimpleHTTPRequestHandler):
             p = (q.get('p') or [''])[0]
         except Exception:
             u = p = ''
-        if hmac.compare_digest(u, SUB_USER) and hmac.compare_digest(p, SUB_PASS):
+        if hmac.compare_digest(u, PANEL_USER) and hmac.compare_digest(p, PANEL_PASS):
             _FAILS.pop(ip, None)
             self._audit(raw, 302, 'session')
             cookie = 'sbp_sid=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax' % (make_session(), SESSION_TTL)
@@ -2223,6 +2231,8 @@ Environment=SUB_USER=${SUB_USER}
 Environment=SUB_PASS=${SUB_PASS}
 Environment=SUB_PATH=${SUB_PATH}
 Environment=SUB_SECRET=${SUB_SECRET}
+Environment=PANEL_USER=${PANEL_USER}
+Environment=PANEL_PASS=${PANEL_PASS}
 Environment=SUB_LOG=/var/log/sbp-sub-access.log
 Environment=TLS_CERT=${TLS_UNIT_CERT}
 Environment=TLS_KEY=${TLS_UNIT_KEY}
