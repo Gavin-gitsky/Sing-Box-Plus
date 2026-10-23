@@ -1803,8 +1803,10 @@ gen_all_sub(){
   b64enc < "$SUB_DIR/warp.txt" > "$SUB_DIR/warp"
 
   ensure_sub_secrets
-  local host="$PUB_IP" base i=1 n
+  local host="$PUB_IP" base sbase i=1 n
   base="$(sub_base)"
+  # 站内导航一律用「路径绝对」链接：不带域名/凭据，也不会被当前页相对解析成双前缀
+  sbase=""; [[ -n "$SUB_PATH" ]] && sbase="/$SUB_PATH"
   {
     cat <<EOF
 <!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -1822,7 +1824,7 @@ gen_all_sub(){
  .item span{flex:1;word-break:break-all;color:#c9d1d9}
  .item button{background:#30363d;color:#e6e6e6;border:0;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer}
 </style></head><body>
-<h1>Sing-Box-Plus · 聚合订阅 <a href="${base}/logout" style="float:right;font-size:12px;font-weight:400;color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px">退出登录</a><a href="${base}/admin/password" style="float:right;margin-right:8px;font-size:12px;font-weight:400;color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px">修改密码</a></h1>
+<h1>Sing-Box-Plus · 聚合订阅 <a href="${sbase}/logout" style="float:right;font-size:12px;font-weight:400;color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px">退出登录</a><a href="${sbase}/admin/password" style="float:right;margin-right:8px;font-size:12px;font-weight:400;color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px">修改密码</a></h1>
 <div class="sub">服务器 <b>${PUB_IP}</b> · 生成时间 $(date '+%Y-%m-%d %H:%M:%S') · 共 20 个节点（直连 10 + WARP 10）</div>
 <div class="sub" style="color:#6e7681">本页需登录；订阅链接本身对客户端长期有效，泄露可一键重置 token</div>
 
