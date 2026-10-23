@@ -1274,6 +1274,7 @@ SUB_DIR=${SUB_DIR:-$SB_DIR/sub}
 SUB_PORT=${SUB_PORT:-2088}
 SUB_SERVICE=${SUB_SERVICE:-sbp-sub.service}
 SUB_USER=${SUB_USER:-}
+SUB_SECRET=${SUB_SECRET:-}
 SUB_PASS=${SUB_PASS:-}
 SUB_PATH=${SUB_PATH:-}
 
@@ -1298,8 +1299,8 @@ sub_base(){
 write_sub_env(){
   mkdir -p "$SB_DIR"
   local tmp; tmp="$(mktemp "${SB_DIR}/sub.env.XXXXXX")"
-  { { [[ -f "$SB_DIR/sub.env" ]] && grep -v -E '^(SUB_PORT|SUB_USER|SUB_PASS|SUB_PATH)=' "$SB_DIR/sub.env" || true; } \
-    ; printf 'SUB_PORT=%s\nSUB_USER=%s\nSUB_PASS=%s\nSUB_PATH=%s\n' "$SUB_PORT" "$SUB_USER" "$SUB_PASS" "$SUB_PATH"; } > "$tmp"
+  { { [[ -f "$SB_DIR/sub.env" ]] && grep -v -E '^(SUB_PORT|SUB_USER|SUB_PASS|SUB_PATH|SUB_SECRET)=' "$SB_DIR/sub.env" || true; } \
+    ; printf 'SUB_PORT=%s\nSUB_USER=%s\nSUB_PASS=%s\nSUB_PATH=%s\nSUB_SECRET=%s\n' "$SUB_PORT" "$SUB_USER" "$SUB_PASS" "$SUB_PATH" "$SUB_SECRET"; } > "$tmp"
   mv "$tmp" "$SB_DIR/sub.env"
 }
 
@@ -1308,6 +1309,7 @@ ensure_sub_secrets(){
   [[ -n "$SUB_USER" ]] || { SUB_USER="$(gen_sub_user)"; changed=1; }
   [[ -n "$SUB_PASS" ]] || { SUB_PASS="$(gen_sub_pass)"; changed=1; }
   [[ -n "$SUB_PATH" ]] || { SUB_PATH="$(gen_sub_path)"; changed=1; }
+  [[ -n "$SUB_SECRET" ]] || { SUB_SECRET="$(rand_hex 32)"; changed=1; }
   [[ "$changed" == "1" ]] && write_sub_env
   return 0
 }
@@ -1811,8 +1813,9 @@ gen_all_sub(){
  .item span{flex:1;word-break:break-all;color:#c9d1d9}
  .item button{background:#30363d;color:#e6e6e6;border:0;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer}
 </style></head><body>
-<h1>Sing-Box-Plus · 聚合订阅</h1>
+<h1>Sing-Box-Plus · 聚合订阅 <a href="${base}/logout" style="float:right;font-size:12px;font-weight:400;color:#8b949e;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:4px 10px">退出登录</a></h1>
 <div class="sub">服务器 <b>${PUB_IP}</b> · 生成时间 $(date '+%Y-%m-%d %H:%M:%S') · 共 20 个节点（直连 10 + WARP 10）</div>
+<div class="sub" style="color:#6e7681">本页需登录；订阅链接本身对客户端长期有效，泄露可一键重置 token</div>
 
 <div class="card"><h2>一键订阅（推荐）</h2>
  <div style="color:#8b949e;font-size:12px;margin-bottom:8px">Clash / Mihomo（含全部 20 节点 + 分组 + 分流规则）</div>
@@ -1861,29 +1864,98 @@ write_sub_server(){
   if tls_on; then TLS_UNIT_CERT="$CERT_DIR/fullchain.pem"; TLS_UNIT_KEY="$CERT_DIR/key.pem"; fi
   cat > "$SB_DIR/sub-server.py" <<'EOS'
 #!/usr/bin/env python3
-# Sing-Box-Plus 订阅服务：HTTP Basic 认证 + 密钥路径 + 短链接别名（/clash、/singbox）
-import os, sys, base64
+# Sing-Box-Plus 订阅服务
+#   · 聚合页：表单登录（HMAC 会话 Cookie）+ 失败锁定，未登录只看到登录框
+#   · 订阅文件（/clash /singbox /all /rules/*）：仍走 HTTP Basic，客户端零改动
+#   · 关闭目录遍历、安全响应头、访问审计 JSONL
+import os, sys, base64, hmac, hashlib, json, time, html, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-SUB_DIR  = os.environ.get('SUB_DIR', '/opt/sing-box/sub')
-SUB_PORT = int(os.environ.get('SUB_PORT', '2088'))
-SUB_USER = os.environ.get('SUB_USER', '')
-SUB_PASS = os.environ.get('SUB_PASS', '')
-SUB_PATH = os.environ.get('SUB_PATH', '').strip('/')
+SUB_DIR    = os.environ.get('SUB_DIR', '/opt/sing-box/sub')
+SUB_PORT   = int(os.environ.get('SUB_PORT', '2088'))
+SUB_USER   = os.environ.get('SUB_USER', '')
+SUB_PASS   = os.environ.get('SUB_PASS', '')
+SUB_PATH   = os.environ.get('SUB_PATH', '').strip('/')
+SUB_SECRET = os.environ.get('SUB_SECRET', '') or (SUB_PASS + '|sbp-session')
+SESSION_TTL = int(os.environ.get('SESSION_TTL', '43200'))   # 12h
+LOG_FILE   = os.environ.get('SUB_LOG', '/var/log/sbp-sub-access.log')
 ALIAS = {'clash': 'clash.yaml', 'singbox': 'singbox.json'}
 
+# 失败锁定：ip -> [fail_count, first_fail_ts, locked_until]
+_FAILS = {}
+MAX_FAIL, LOCK_SEC, WINDOW_SEC = 5, 900, 900
+
+LOGIN_HTML = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>登录 · Sing-Box-Plus</title>
+<style>
+ body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#0f1115;color:#e6e6e6;
+      display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+ .box{background:#171a21;border:1px solid #232833;border-radius:12px;padding:26px 24px;width:320px}
+ h1{font-size:17px;margin:0 0 4px} p{color:#8b949e;font-size:12px;margin:0 0 18px}
+ input{width:100%;box-sizing:border-box;background:#0b0e13;border:1px solid #2b313c;color:#e6e6e6;
+       border-radius:8px;padding:9px 10px;font-size:14px;margin-bottom:10px}
+ button{width:100%;background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:10px;font-size:14px;cursor:pointer}
+ .err{color:#f85149;font-size:12px;margin-bottom:10px}
+</style></head><body>
+<div class="box"><h1>Sing-Box-Plus</h1><p>聚合订阅面板，请登录</p>
+{err}
+<form method="POST" action="{action}">
+ <input name="u" placeholder="用户名" autocomplete="username" autofocus>
+ <input name="p" type="password" placeholder="密码" autocomplete="current-password">
+ <button type="submit">登录</button>
+</form></div></body></html>"""
+
+
+def _now():
+    return int(time.time())
+
+
+def _sign(payload: str) -> str:
+    return hmac.new(SUB_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def make_session() -> str:
+    exp = _now() + SESSION_TTL
+    payload = 'v1.%d.%s' % (exp, hashlib.sha256(SUB_SECRET.encode()).hexdigest()[:8])
+    return payload + '.' + _sign(payload)
+
+
+def check_session(tok: str) -> bool:
+    try:
+        v, exp_s, tag, sig = tok.split('.')
+        payload = '.'.join((v, exp_s, tag))
+        if not hmac.compare_digest(_sign(payload), sig):
+            return False
+        return int(exp_s) > _now()
+    except Exception:
+        return False
+
+
 class Handler(SimpleHTTPRequestHandler):
+    server_version = 'sbp-sub'
+    sys_version = ''
+
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=SUB_DIR, **kw)
 
+    # ---------- 工具 ----------
     def log_message(self, fmt, *args):
         sys.stderr.write('%s - [%s] %s\n' % (self.address_string(), self.log_date_time_string(), fmt % args))
 
-    def _authed(self):
-        # rules/ 目录（分流规则库）免认证：内容是公开的 geosite/geoip 列表，客户端取用不应依赖凭据
-        p = self.path.split('?', 1)[0]
-        if SUB_PATH and p.startswith('/' + SUB_PATH + '/rules/'):
-            return True
+    def _raw_path(self):
+        return self.path.split('?', 1)[0]
+
+    def _strip_prefix(self, path):
+        """去掉 /<SUB_PATH> 前缀，返回站内路径；不在前缀下返回 None。"""
+        if not SUB_PATH:
+            return path
+        if path == '/' + SUB_PATH or path == '/' + SUB_PATH + '/':
+            return '/'
+        if path.startswith('/' + SUB_PATH + '/'):
+            return path[len(SUB_PATH) + 1:]
+        return None
+
+    def _basic_ok(self):
         if not SUB_USER and not SUB_PASS:
             return True
         h = self.headers.get('Authorization', '')
@@ -1894,60 +1966,224 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception:
             return False
         u, _, p = raw.partition(':')
-        return u == SUB_USER and p == SUB_PASS
+        return hmac.compare_digest(u, SUB_USER) and hmac.compare_digest(p, SUB_PASS)
 
-    def _gate(self):
-        if self._authed():
-            return True
-        self.send_response(401)
-        self.send_header('WWW-Authenticate', 'Basic realm="sub"')
-        self.send_header('Content-Length', '0')
-        self.end_headers()
+    def _cookie_ok(self):
+        raw = self.headers.get('Cookie', '')
+        for part in raw.split(';'):
+            k, _, v = part.strip().partition('=')
+            if k == 'sbp_sid' and check_session(v):
+                return True
         return False
 
-    def _rewrite(self):
-        path = self.path.split('?', 1)[0]
-        if SUB_PATH:
-            if path == '/' + SUB_PATH or path == '/' + SUB_PATH + '/':
-                path = '/'
-            elif path.startswith('/' + SUB_PATH + '/'):
-                path = path[len(SUB_PATH) + 1:]
-            else:
-                return None
-        seg = path.lstrip('/')
-        if seg in ALIAS:
-            path = '/' + ALIAS[seg]
-        return path
+    def _audit(self, path, status, authed):
+        try:
+            rec = {
+                'ts': _now(),
+                'ip': self.client_address[0],
+                'path': path,
+                'status': status,
+                'auth': 'session' if authed == 'session' else ('basic' if authed == 'basic' else 'none'),
+                'ua': (self.headers.get('User-Agent') or '')[:120],
+            }
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        except Exception:
+            pass
 
-    def _prepare(self):
-        if not self._gate():
-            return False
-        new = self._rewrite()
-        if new is None:
+    def _headers(self):
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Cache-Control', 'no-store')
+        if getattr(self.server, 'is_tls', False):
+            self.send_header('Strict-Transport-Security', 'max-age=31536000')
+
+    def _send_html(self, code, body, extra=None):
+        data = body.encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self._headers()
+        for k, v in (extra or []):
+            self.send_header(k, v)
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _login_page(self, err=''):
+        action = ('/' + SUB_PATH + '/login') if SUB_PATH else '/login'
+        e = ('<div class="err">%s</div>' % html.escape(err)) if err else ''
+        return LOGIN_HTML.replace('{action}', action).replace('{err}', e)
+
+    def _locked(self, ip):
+        st = _FAILS.get(ip)
+        return bool(st and st[2] > _now())
+
+    def _note_fail(self, ip):
+        st = _FAILS.get(ip) or [0, _now(), 0]
+        if _now() - st[1] > WINDOW_SEC:
+            st = [0, _now(), 0]
+        st[0] += 1
+        if st[0] >= MAX_FAIL:
+            st[2] = _now() + LOCK_SEC
+            st[0] = 0
+        _FAILS[ip] = st
+
+    # ---------- 路由 ----------
+    def _serve_file(self, internal):
+        """internal 为站内路径（已去掉前缀），交给父类发文件。"""
+        if internal in ('/', ''):
+            internal = '/index.html'
+        seg = internal.lstrip('/')
+        if seg in ALIAS:
+            internal = '/' + ALIAS[seg]
+        elif seg.endswith('/'):
             self.send_error(404, 'Not Found')
-            return False
-        if new == '/' or new.endswith('/'):
-            new = '/index.html'
-        self.path = new
-        return True
+            return
+        # 只放行白名单文件类型
+        allow = ('.yaml', '.yml', '.json', '.txt', '.html', '.js', '.css', '.list', '.db', '.srs', '.mrs', '')
+        if os.path.splitext(internal)[1].lower() not in allow:
+            self.send_error(404, 'Not Found')
+            return
+        self.path = internal
+        try:
+            super().do_GET()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_GET(self):
-        if self._prepare():
+        raw = self._raw_path()
+        internal = self._strip_prefix(raw)
+
+        # /admin/access —— 审计（需会话或 Basic）
+        if internal == '/admin/access':
+            if not (self._cookie_ok() or self._basic_ok()):
+                self._audit(raw, 401, 'none')
+                return self._send_html(401, self._login_page('需要登录'))
             try:
-                super().do_GET()
+                with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()[-200:]
+            except Exception:
+                lines = []
+            body = '{"entries":[' + ','.join(x.strip() for x in lines if x.strip()) + ']}'
+            data = body.encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self._headers()
+            self.end_headers()
+            try:
+                self.wfile.write(data)
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            return
+
+        # /logout
+        if internal == '/logout':
+            self._audit(raw, 302, 'session')
+            self.send_response(302)
+            self.send_header('Location', ('/' + SUB_PATH + '/') if SUB_PATH else '/')
+            self.send_header('Set-Cookie', 'sbp_sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax')
+            self.send_header('Content-Length', '0')
+            self._headers()
+            self.end_headers()
+            return
+
+        if internal is None:
+            self._audit(raw, 404, 'none')
+            return self.send_error(404, 'Not Found')
+
+        # rules/ 免认证（公开分流库，客户端要用）
+        if internal.startswith('/rules/'):
+            self._audit(raw, 200, 'none')
+            return self._serve_file(internal)
+
+        # 聚合页与其它文件：会话优先，其次 Basic
+        if internal in ('/', '/index.html'):
+            if self._cookie_ok():
+                self._audit(raw, 200, 'session')
+                return self._serve_file(internal)
+            if self._basic_ok():
+                self._audit(raw, 200, 'basic')
+                return self._serve_file(internal)
+            self._audit(raw, 401, 'none')
+            return self._send_html(200, self._login_page())
+
+        if self._basic_ok() or self._cookie_ok():
+            self._audit(raw, 200, 'basic' if self._basic_ok() else 'session')
+            return self._serve_file(internal)
+
+        self._audit(raw, 401, 'none')
+        self.send_response(401)
+        self.send_header('WWW-Authenticate', 'Basic realm="sub"')
+        self._headers()
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def do_POST(self):
+        raw = self._raw_path()
+        internal = self._strip_prefix(raw)
+        if internal != '/login':
+            self._audit(raw, 404, 'none')
+            return self.send_error(404, 'Not Found')
+        ip = self.client_address[0]
+        if self._locked(ip):
+            self._audit(raw, 429, 'none')
+            return self._send_html(429, self._login_page('尝试过多，请 15 分钟后再试'))
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+            body = self.rfile.read(min(n, 4096)).decode('utf-8', 'replace')
+            q = urllib.parse.parse_qs(body)
+            u = (q.get('u') or [''])[0]
+            p = (q.get('p') or [''])[0]
+        except Exception:
+            u = p = ''
+        if hmac.compare_digest(u, SUB_USER) and hmac.compare_digest(p, SUB_PASS):
+            _FAILS.pop(ip, None)
+            self._audit(raw, 302, 'session')
+            cookie = 'sbp_sid=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax' % (make_session(), SESSION_TTL)
+            if getattr(self.server, 'is_tls', False):
+                cookie += '; Secure'
+            self.send_response(302)
+            self.send_header('Location', ('/' + SUB_PATH + '/') if SUB_PATH else '/')
+            self.send_header('Set-Cookie', cookie)
+            self._headers()
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        self._note_fail(ip)
+        self._audit(raw, 401, 'none')
+        self._send_html(401, self._login_page('用户名或密码错误'))
 
     def do_HEAD(self):
-        if self._prepare():
+        if self._basic_ok() or self._cookie_ok():
+            internal = self._strip_prefix(self._raw_path())
+            if internal is None:
+                return self.send_error(404, 'Not Found')
+            if internal in ('/', ''):
+                internal = '/index.html'
+            seg = internal.lstrip('/')
+            if seg in ALIAS:
+                internal = '/' + ALIAS[seg]
+            self.path = internal
             try:
                 super().do_HEAD()
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            return
+        self.send_response(401)
+        self.send_header('WWW-Authenticate', 'Basic realm="sub"')
+        self._headers()
+        self.send_header('Content-Length', '0')
+        self.end_headers()
 
     def list_directory(self, path):
         self.send_error(403, 'Forbidden')
         return None
+
 
 if __name__ == '__main__':
     if not os.path.isdir(SUB_DIR):
@@ -1957,13 +2193,16 @@ if __name__ == '__main__':
     tls_cert = os.environ.get('TLS_CERT', '')
     tls_key = os.environ.get('TLS_KEY', '')
     scheme = 'http'
+    srv.is_tls = False
     if tls_cert and tls_key and os.path.exists(tls_cert) and os.path.exists(tls_key):
         import ssl
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(tls_cert, tls_key)
         srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        srv.is_tls = True
         scheme = 'https'
-    sys.stderr.write('订阅服务已启动: %s://0.0.0.0:%d  路径前缀=/%s  认证=%s\n' % (scheme, SUB_PORT, SUB_PATH, 'on' if SUB_USER else 'off'))
+    sys.stderr.write('订阅服务已启动: %s://0.0.0.0:%d  路径前缀=/%s  认证=%s  登录页=%s\n'
+                     % (scheme, SUB_PORT, SUB_PATH, 'on' if SUB_USER else 'off', 'on' if SUB_USER else 'off'))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -1983,6 +2222,8 @@ Environment=SUB_PORT=${SUB_PORT}
 Environment=SUB_USER=${SUB_USER}
 Environment=SUB_PASS=${SUB_PASS}
 Environment=SUB_PATH=${SUB_PATH}
+Environment=SUB_SECRET=${SUB_SECRET}
+Environment=SUB_LOG=/var/log/sbp-sub-access.log
 Environment=TLS_CERT=${TLS_UNIT_CERT}
 Environment=TLS_KEY=${TLS_UNIT_KEY}
 ExecStart=/usr/bin/env python3 ${SB_DIR}/sub-server.py

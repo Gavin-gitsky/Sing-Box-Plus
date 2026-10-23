@@ -180,3 +180,14 @@ bash tools/selftest.sh
 - [x] 订阅服务可选 HTTPS + 节点真证书（acme.sh DNS-01，已落地）
 - [ ] 支持 Clash `rule-providers`（按需下载规则集，省内存）
 - [ ] 换端口时自动同步 Cloudflare / 云安全组（API）
+
+## 订阅面板登录（2026-10-24）
+
+- **聚合页**：访问 `https://<域名>:<端口>/<SUB_PATH>/` 会先看到**登录表单**（用户名 `SUB_USER` / 密码 `SUB_PASS`，存在 `/opt/sing-box/sub.env`）。
+  - 登录成功签发 **HMAC 签名的 HttpOnly 会话 Cookie**（默认 12 小时，`SESSION_TTL` 可调），支持「退出登录」。
+  - 连续 **5 次密码错误 → 锁定 15 分钟**（按来源 IP）。
+  - 未登录时不返回任何页面内容，只返回登录框。
+- **订阅链接不变**：`/clash`、`/singbox`、`/all`、`/rules/*` 仍走 **HTTP Basic**，客户端（Clash/sing-box/Shadowrocket）零改动。
+- **加固**：关闭目录遍历、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、TLS 下自动加 HSTS。
+- **审计**：访问记录写 `/var/log/sbp-sub-access.log`（JSONL），可 `GET /admin/access`（需登录）查看最近 200 条，含来源 IP / 路径 / UA / 是否认证。
+- 会话密钥 `SUB_SECRET` 首次生成后写入 `sub.env`，重跑脚本不会变（不会把大家登出）。
