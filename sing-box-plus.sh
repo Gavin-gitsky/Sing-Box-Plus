@@ -1907,8 +1907,9 @@ gen_all_sub(){
  h1{font-size:20px;margin:0 0 6px} .sub{color:#8b949e;font-size:13px;margin-bottom:14px}
  .card{background:#171a21;border:1px solid #232833;border-radius:10px;padding:14px;margin:0 0 14px}
  .card h2{font-size:15px;margin:0 0 10px;color:#7ee787}
- a.btn{display:inline-block;background:#1f6feb;color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:13px;margin:0 8px 8px 0}
- a.btn.alt{background:#238636} a.btn.gray{background:#30363d}
+ .btn{display:inline-block;background:#1f6feb;color:#fff;text-decoration:none;padding:8px 12px;border-radius:8px;font-size:13px;margin:0 8px 8px 0;border:0;cursor:pointer;font-family:inherit}
+ .btn.alt{background:#238636} .btn.gray{background:#30363d}
+ a.open{margin:0 8px 8px 0;font-size:12px;color:#8b949e;text-decoration:none;border-bottom:1px dashed #30363d}
  code{background:#0b0e13;padding:2px 6px;border-radius:6px;font-size:12px;color:#c9d1d9;word-break:break-all}
  .item{background:#0b0e13;border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:12px;display:flex;gap:8px;align-items:center}
  .item span{flex:1;word-break:break-all;color:#c9d1d9}
@@ -1920,13 +1921,13 @@ gen_all_sub(){
 
 <div class="card"><h2>一键订阅（推荐）</h2>
  <div style="color:#8b949e;font-size:12px;margin-bottom:8px">Clash / Mihomo（含全部 20 节点 + 分组 + 分流规则）</div>
- <a class="btn" href="${base}/clash" target="_blank">复制 Clash 订阅链接</a>
+ <button type="button" class="btn" onclick="cpText('u1',this)">复制 Clash 订阅链接</button><a class="open" href="${base}/clash" target="_blank">打开/下载</a>
  <code id="u1">${base}/clash</code>
  <div style="color:#8b949e;font-size:12px;margin:12px 0 8px">sing-box（客户端配置，含全部 20 节点）</div>
- <a class="btn alt" href="${base}/singbox" target="_blank">复制 sing-box 订阅链接</a>
+ <button type="button" class="btn alt" onclick="cpText('u2',this)">复制 sing-box 订阅链接</button><a class="open" href="${base}/singbox" target="_blank">打开/下载</a>
  <code id="u2">${base}/singbox</code>
  <div style="color:#8b949e;font-size:12px;margin:12px 0 8px">通用聚合（全部 20 条链接的 base64，v2rayN / Shadowrocket / 小火箭 均可直接导入）</div>
- <a class="btn gray" href="${base}/all" target="_blank">复制聚合订阅链接</a>
+ <button type="button" class="btn gray" onclick="cpText('u3',this)">复制聚合订阅链接</button><a class="open" href="${base}/all" target="_blank">打开/下载</a>
  <code id="u3">${base}/all</code>
 </div>
 
@@ -1942,7 +1943,11 @@ EOF
     cat <<EOF
  </div>
 <script>
-function cp(b){var t=b.previousElementSibling.innerText;navigator.clipboard&&navigator.clipboard.writeText(t);b.innerText='已复制';setTimeout(function(){b.innerText='复制'},1200);}
+function _fb(t){var a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.top='-1000px';document.body.appendChild(a);a.focus();a.select();var r=false;try{r=document.execCommand('copy')}catch(e){r=false}document.body.removeChild(a);return r}
+function _copy(t,el,label){label=label||'复制';function done(ok){el.innerText=ok?'已复制':'复制失败(请手动选中)';setTimeout(function(){el.innerText=label},1400)}
+ if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(function(){done(true)},function(){done(_fb(t))})}else{done(_fb(t))}}
+function cpText(id,el){var n=document.getElementById(id);_copy((n?n.innerText:'').trim(),el,'复制')}
+function cp(b){var p=b.previousElementSibling;_copy((p?p.innerText:'').trim(),b,'复制')}
 </script></body></html>
 EOF
   } > "$SUB_DIR/index.html"
