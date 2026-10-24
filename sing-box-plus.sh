@@ -1289,6 +1289,23 @@ rand_hex(){ if command -v openssl >/dev/null 2>&1; then openssl rand -hex "$1"; 
 gen_sub_pass(){ tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16; }
 gen_sub_path(){ rand_hex 16; }
 gen_sub_user(){ printf 'u%s' "$(rand_hex 4)"; }
+# 打印订阅 Basic 凭据 + 完整链接（终端现场可见，勿截图外传）
+print_sub_cred_block(){
+  local exd exsch tok
+  exd="$(grep -E '^TLS_DOMAIN=' "$SB_DIR/tls.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  exsch="https"; if [[ -z "$exd" ]]; then exd="${PUB_IP:-域名}"; exsch="http"; fi
+  tok="$(sub_token 2>/dev/null || true)"
+  echo -e "  ${C_GREEN}账号:${C_RESET} ${SUB_USER}"
+  echo -e "  ${C_GREEN}密码:${C_RESET} ${SUB_PASS}（${#SUB_PASS} 位，不写进订阅链接）"
+  echo -e "  ${C_CYAN}Basic 链接（带账号密码，浏览器/curl 直取）:${C_RESET}"
+  echo -e "    ${exsch}://${SUB_USER}:${SUB_PASS}@${exd}:${SUB_PORT}/${SUB_PATH}/clash"
+  echo -e "    ${exsch}://${SUB_USER}:${SUB_PASS}@${exd}:${SUB_PORT}/${SUB_PATH}/singbox"
+  echo -e "  ${C_CYAN}令牌链接（客户端用，无账号密码）:${C_RESET}"
+  echo -e "    ${exsch}://${exd}:${SUB_PORT}/${SUB_PATH}/t/${tok}/clash"
+  echo -e "    ${exsch}://${exd}:${SUB_PORT}/${SUB_PATH}/t/${tok}/singbox"
+  echo -e "  ${C_CYAN}示例:${C_RESET} curl -u ${SUB_USER}:${SUB_PASS} ${exsch}://${exd}:${SUB_PORT}/${SUB_PATH}/clash -o config.yaml"
+}
+
 # 密码掩码：只露首尾各 2 位
 mask_pass(){ local p="${1:-}"; if [[ ${#p} -le 4 ]]; then printf '****'; else printf '%s****%s' "${p:0:2}" "${p: -2}"; fi; }
 
@@ -2694,25 +2711,21 @@ sub_menu(){
          read -rp "回车返回..." _ || true ;;
       6) hr
          echo -e " ${C_CYAN}订阅 Basic 兜底凭据${C_RESET}（令牌链接不需要它；二者满足一个即放行）"
-         echo -e "  当前账号: ${SUB_USER}"
-         echo -e "  当前密码: $(mask_pass "$SUB_PASS")"
-         local exd exsch
-         exd="$(grep -E '^TLS_DOMAIN=' "$SB_DIR/tls.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-         exsch="https"; if [[ -z "$exd" ]]; then exd="${PUB_IP:-域名}"; exsch="http"; fi
-         echo -e "  用法示例（把“密码”换成真实密码）:"
-         echo -e "    浏览器: ${exsch}://${SUB_USER}:密码@${exd}:${SUB_PORT}/${SUB_PATH}/clash"
-         echo -e "    curl  : curl -u ${SUB_USER}:密码 ${exsch}://${exd}:${SUB_PORT}/${SUB_PATH}/clash -o config.yaml"
-         echo -e "    客户端: 订阅地址填上面带账号密码的那条；令牌链接则无需账号密码"
+         print_sub_cred_block
          hr
-         read -rp "新账号(回车=不改): " nu || true
-         read -rsp "新密码(回车=不改，输入 - = 随机生成): " npw || true; echo
+         echo -e "  ${C_CYAN}修改${C_RESET}（输入 - 表示随机生成；两项都回车 = 不改）"
+         read -rp "新账号(回车=不改，- = 随机): " nu || true
+         read -rp "新密码(回车=不改，- = 随机，直接输入=自定义): " npw || true
+         if [[ "${nu:-}" == "-" ]]; then nu="$(gen_sub_user)"; fi
          if [[ "${npw:-}" == "-" ]]; then npw="$(gen_sub_pass)"; fi
          if [[ -n "${nu:-}" || -n "${npw:-}" ]]; then
            [[ -n "${nu:-}" ]] && SUB_USER="$nu"
            [[ -n "${npw:-}" ]] && SUB_PASS="$npw"
-           write_sub_env; serve_subs_start
-           echo -e "  ${C_GREEN}已更新:${C_RESET} 账号 ${SUB_USER} / 密码 $(mask_pass "$SUB_PASS")（${#SUB_PASS} 位）"
-           echo -e "  ${C_YELLOW}⚠ 订阅链接/令牌不变；仅影响走 Basic 认证的旧方式${C_RESET}"
+           write_sub_env; serve_subs_start >/dev/null 2>&1 || true
+           echo
+           echo -e "  ${C_GREEN}✅ 已更新${C_RESET}（服务已重启）"
+           print_sub_cred_block
+           echo -e "  ${C_YELLOW}⚠ 订阅令牌不变；仅影响走 Basic 认证的旧方式${C_RESET}"
          else
            info "未修改"
          fi
