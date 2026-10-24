@@ -1291,12 +1291,20 @@ gen_sub_path(){ rand_hex 16; }
 gen_sub_user(){ printf 'u%s' "$(rand_hex 4)"; }
 
 # 带凭据+密钥路径的订阅根地址（未配置凭据时退回裸地址）
+sub_token(){
+  # 订阅令牌：由 SUB_SECRET 派生（跟服务端 sub_token() 同一算法）
+  [[ -n "${SUB_SECRET:-}" ]] || return 1
+  printf '%s' "sub-token-v1|${SUB_SECRET}" | sha256sum | cut -c1-32
+}
+
 sub_base(){
-  local host="${1:-$PUB_IP}" scheme="http"
+  local host="${1:-$PUB_IP}" scheme="http" tok
   if [[ -z "$SUB_USER" && -f "$SB_DIR/sub.env" ]]; then safe_source_env "$SB_DIR/sub.env" 2>/dev/null || true; fi
   if tls_on; then host="$TLS_DOMAIN"; scheme="https"; fi
-  if [[ -n "$SUB_USER" ]]; then
-    printf '%s://%s:%s@%s:%s/%s' "$scheme" "$SUB_USER" "$SUB_PASS" "$host" "$SUB_PORT" "$SUB_PATH"
+  tok="$(sub_token 2>/dev/null || true)"
+  # 令牌式：链接里不带账号密码，客户端照样零配置导入
+  if [[ -n "$SUB_PATH" && -n "$tok" ]]; then
+    printf '%s://%s:%s/%s/t/%s' "$scheme" "$host" "$SUB_PORT" "$SUB_PATH" "$tok"
   else
     printf '%s://%s:%s' "$scheme" "$host" "$SUB_PORT"
   fi
@@ -1879,7 +1887,7 @@ write_sub_server(){
 #   · 聚合页：表单登录（HMAC 会话 Cookie）+ 失败锁定，未登录只看到登录框
 #   · 订阅文件（/clash /singbox /all /rules/*）：仍走 HTTP Basic，客户端零改动
 #   · 关闭目录遍历、安全响应头、访问审计 JSONL
-import os, sys, base64, hmac, hashlib, json, time, html, urllib.parse
+import os, sys, base64, hmac, hashlib, json, re, time, html, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 SUB_DIR    = os.environ.get('SUB_DIR', '/opt/sing-box/sub')
@@ -1973,6 +1981,11 @@ def _sign(payload: str) -> str:
     return hmac.new(SUB_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
 
 
+def sub_token() -> str:
+    """订阅令牌（无密码链接用）：由 SUB_SECRET 派生，换密码不变、换 SUB_SECRET 即换。"""
+    return hashlib.sha256(('sub-token-v1|' + SUB_SECRET).encode()).hexdigest()[:32]
+
+
 def make_session() -> str:
     exp = _now() + SESSION_TTL
     payload = 'v1.%d.%d.%s' % (exp, SESSION_EPOCH, hashlib.sha256(SUB_SECRET.encode()).hexdigest()[:8])
@@ -2039,7 +2052,26 @@ class Handler(SimpleHTTPRequestHandler):
             path = path[len(pre):] or '/'
             if not path.startswith('/'):
                 path = '/' + path
-        return path if hit else None
+        if not hit:
+            return None
+        # 令牌链接：/<SUB_PATH>/t/<32位令牌>/<文件>（无账号密码）
+        m = re.match(r'^/t/([0-9a-f]{32})(?:/(.*))?$', path)
+        if m:
+            self._tok = bool(hmac.compare_digest(m.group(1), sub_token()))
+            rest = (m.group(2) or '').strip('/')
+            return '/' + rest if rest else '/'
+        self._tok = False
+        return path
+
+    def _token_ok(self, internal):
+        """令牌只能取订阅文件，不能当面板登录用。"""
+        if not getattr(self, '_tok', False):
+            return False
+        if internal in ('/', '/index.html', '/login', '/logout', ''):
+            return False
+        if internal.startswith('/admin/'):
+            return False
+        return True
 
     def _basic_ok(self):
         if not SUB_USER and not SUB_PASS:
@@ -2069,7 +2101,7 @@ class Handler(SimpleHTTPRequestHandler):
                 'ip': self.client_address[0],
                 'path': path,
                 'status': status,
-                'auth': 'session' if authed == 'session' else ('basic' if authed == 'basic' else 'none'),
+                'auth': 'session' if authed == 'session' else ('basic' if authed == 'basic' else ('token' if authed == 'token' else 'none')),
                 'ua': (self.headers.get('User-Agent') or '')[:120],
             }
             with open(LOG_FILE, 'a', encoding='utf-8') as f:
@@ -2216,7 +2248,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._audit(raw, 200, 'none')
             return self._serve_file(internal)
 
-        # 聚合页与其它文件：会话优先，其次 Basic
+        # 聚合页与其它文件：会话优先，其次令牌，其次 Basic
         if internal in ('/', '/index.html'):
             if self._cookie_ok():
                 self._audit(raw, 200, 'session')
@@ -2226,6 +2258,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._serve_file(internal)
             self._audit(raw, 401, 'none')
             return self._send_html(200, self._login_page())
+
+        if self._token_ok(internal):
+            self._audit(raw, 200, 'token')
+            return self._serve_file(internal)
 
         if self._basic_ok() or self._cookie_ok():
             self._audit(raw, 200, 'basic' if self._basic_ok() else 'session')
@@ -2342,10 +2378,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_HEAD(self):
-        if self._basic_ok() or self._cookie_ok():
-            internal = self._strip_prefix(self._raw_path())
-            if internal is None:
-                return self.send_error(404, 'Not Found')
+        internal = self._strip_prefix(self._raw_path())
+        if internal is not None and (self._token_ok(internal) or self._basic_ok() or self._cookie_ok()):
             if internal in ('/', ''):
                 internal = '/index.html'
             seg = internal.lstrip('/')
