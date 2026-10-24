@@ -3,7 +3,7 @@
 #  Sing-Box-Plus 管理脚本（20 节点：直连 10 + WARP 10）
 #  Version: v4.8.0
 #  author：Alvin9999
-#  Repo: https://github.com/Alvin9999-newpac/Sing-Box-Plus
+#  Repo: https://github.com/Gavin-gitsky/Sing-Box-Plus  (本项目分支，定制版以本仓为准)
 # ============================================================
 
 set -Eeuo pipefail
@@ -1187,7 +1187,7 @@ banner(){
   clear >/dev/null 2>&1 || true
   hr
   echo -e " ${C_CYAN}🚀 ${SCRIPT_NAME} ${SCRIPT_VERSION} 🚀${C_RESET}"
-  echo -e "${C_CYAN} 脚本更新地址: https://github.com/Alvin9999-newpac/Sing-Box-Plus${C_RESET}"
+  echo -e "${C_CYAN} 脚本更新地址: https://github.com/Gavin-gitsky/Sing-Box-Plus${C_RESET}"
   echo -e "${C_MAGENTA} 订阅增强版：一键生成 Clash / sing-box / 聚合订阅（20 节点一条链接）${C_RESET}"
 
   hr
@@ -1413,7 +1413,8 @@ set_panel_password(){
   echo -e "  ${C_YELLOW}⚠ 与订阅 Basic 无关，客户端订阅不受影响${C_RESET}"
 }
 
-# ---- TLS（真证书）配置：默认关闭，配了才启用 ----safe_source_env "$SB_DIR/tls.env" 2>/dev/null || true
+# ---- TLS（真证书）配置：默认关闭，配了才启用 ----
+safe_source_env "$SB_DIR/tls.env" 2>/dev/null || true
 TLS_DOMAIN=${TLS_DOMAIN:-}
 TLS_EMAIL=${TLS_EMAIL:-}
 TLS_CF_TOKEN=${TLS_CF_TOKEN:-}
