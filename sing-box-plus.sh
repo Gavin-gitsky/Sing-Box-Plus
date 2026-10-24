@@ -2690,9 +2690,12 @@ sub_menu(){
          echo -e " ${C_CYAN}订阅 Basic 兜底凭据${C_RESET}（令牌链接不需要它；二者满足一个即放行）"
          echo -e "  当前账号: ${SUB_USER}"
          echo -e "  当前密码: $(mask_pass "$SUB_PASS")"
+         local exd exsch
+         exd="$(grep -E '^TLS_DOMAIN=' "$SB_DIR/tls.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+         exsch="https"; if [[ -z "$exd" ]]; then exd="${PUB_IP:-域名}"; exsch="http"; fi
          echo -e "  用法示例（把“密码”换成真实密码）:"
-         echo -e "    浏览器: https://${SUB_USER}:密码@${TLS_DOMAIN:-域名}:${SUB_PORT}/${SUB_PATH}/clash"
-         echo -e "    curl  : curl -u ${SUB_USER}:密码 https://${TLS_DOMAIN:-域名}:${SUB_PORT}/${SUB_PATH}/clash -o config.yaml"
+         echo -e "    浏览器: ${exsch}://${SUB_USER}:密码@${exd}:${SUB_PORT}/${SUB_PATH}/clash"
+         echo -e "    curl  : curl -u ${SUB_USER}:密码 ${exsch}://${exd}:${SUB_PORT}/${SUB_PATH}/clash -o config.yaml"
          echo -e "    客户端: 订阅地址填上面带账号密码的那条；令牌链接则无需账号密码"
          hr
          read -rp "新账号(回车=不改): " nu || true
