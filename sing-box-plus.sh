@@ -1323,11 +1323,25 @@ ensure_sub_secrets(){
   [[ -n "$SUB_USER" ]] || { SUB_USER="$(gen_sub_user)"; changed=1; }
   [[ -n "$SUB_PASS" ]] || { SUB_PASS="$(gen_sub_pass)"; changed=1; }
   [[ -n "$SUB_PATH" ]] || { SUB_PATH="$(gen_sub_path)"; changed=1; }
+  # 订阅密钥单一来源：优先沿用 sub.secret.env（python 服务注入的就是它）
+  # 否则 sub.env 与 sub.secret.env 各存一份，会拼出「页面令牌对得上、服务端校验不上」
+  if [[ -f "$SB_DIR/sub.secret.env" ]]; then
+    local s; s="$(grep -E '^SUB_SECRET=' "$SB_DIR/sub.secret.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+    [[ -n "$s" ]] && SUB_SECRET="$s"
+  fi
   [[ -n "$SUB_SECRET" ]] || { SUB_SECRET="$(rand_hex 32)"; changed=1; }
   # 面板登录凭据（独立于订阅 Basic，改它不影响客户端）
   [[ -n "$PANEL_USER" ]] || { PANEL_USER="gavin"; changed=1; }
   [[ -n "$PANEL_PASS" ]] || { PANEL_PASS="$(gen_sub_pass)"; changed=1; }
   [[ "$changed" == "1" ]] && write_sub_env
+  # 两份文件对齐（只动 SUB_SECRET 一行，其余键保留）
+  local cur; cur="$(grep -E '^SUB_SECRET=' "$SB_DIR/sub.secret.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if [[ "$cur" != "$SUB_SECRET" ]]; then
+    local f="$SB_DIR/sub.secret.env" tmp
+    mkdir -p "$SB_DIR"; tmp="$(mktemp "${f}.XXXXXX")"
+    { { [[ -f "$f" ]] && grep -v '^SUB_SECRET=' "$f" || true; }; printf 'SUB_SECRET=%s\n' "$SUB_SECRET"; } > "$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true; mv "$tmp" "$f"
+  fi
   return 0
 }
 
