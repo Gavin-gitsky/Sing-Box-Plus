@@ -1289,6 +1289,8 @@ rand_hex(){ if command -v openssl >/dev/null 2>&1; then openssl rand -hex "$1"; 
 gen_sub_pass(){ tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16; }
 gen_sub_path(){ rand_hex 16; }
 gen_sub_user(){ printf 'u%s' "$(rand_hex 4)"; }
+# 密码掩码：只露首尾各 2 位
+mask_pass(){ local p="${1:-}"; if [[ ${#p} -le 4 ]]; then printf '****'; else printf '%s****%s' "${p:0:2}" "${p: -2}"; fi; }
 
 # 带凭据+密钥路径的订阅根地址（未配置凭据时退回裸地址）
 sub_token(){
@@ -2666,7 +2668,7 @@ sub_menu(){
     echo -e "  ${C_GREEN}3)${C_RESET} 启动/重启订阅服务"
     echo -e "  ${C_GREEN}4)${C_RESET} 停止订阅服务"
     echo -e "  ${C_GREEN}5)${C_RESET} 修改订阅端口"
-    echo -e "  ${C_GREEN}6)${C_RESET} 修改订阅账号密码"
+    echo -e "  ${C_GREEN}6)${C_RESET} 订阅 Basic 兜底凭据（令牌链接用不到，可查看用法）"
     echo -e "  ${C_GREEN}7)${C_RESET} 重置密钥路径（换新路径，令牌不变）"
     echo -e "  ${C_GREEN}8)${C_RESET} 更新分流规则库（geosite/geoip）并重生成订阅"
     echo -e "  ${C_RED}9)${C_RESET} 重置订阅令牌（换 SUB_SECRET，所有链接+会话失效）"
@@ -2684,11 +2686,27 @@ sub_menu(){
            SUB_PORT="$np"; write_sub_env; serve_subs_start; show_subs
          else warn "端口不合法"; fi
          read -rp "回车返回..." _ || true ;;
-      6) read -rp "新账号(回车保留当前): " nu || true
-         [[ -n "$nu" ]] && SUB_USER="$nu"
-         read -rsp "新密码(回车=随机生成): " npw || true; echo
-         if [[ -n "$npw" ]]; then SUB_PASS="$npw"; else SUB_PASS="$(gen_sub_pass)"; fi
-         write_sub_env; serve_subs_start; show_subs
+      6) hr
+         echo -e " ${C_CYAN}订阅 Basic 兜底凭据${C_RESET}（令牌链接不需要它；二者满足一个即放行）"
+         echo -e "  当前账号: ${SUB_USER}"
+         echo -e "  当前密码: $(mask_pass "$SUB_PASS")"
+         echo -e "  用法示例（把“密码”换成真实密码）:"
+         echo -e "    浏览器: https://${SUB_USER}:密码@${TLS_DOMAIN:-域名}:${SUB_PORT}/${SUB_PATH}/clash"
+         echo -e "    curl  : curl -u ${SUB_USER}:密码 https://${TLS_DOMAIN:-域名}:${SUB_PORT}/${SUB_PATH}/clash -o config.yaml"
+         echo -e "    客户端: 订阅地址填上面带账号密码的那条；令牌链接则无需账号密码"
+         hr
+         read -rp "新账号(回车=不改): " nu || true
+         read -rsp "新密码(回车=不改，输入 - = 随机生成): " npw || true; echo
+         if [[ "${npw:-}" == "-" ]]; then npw="$(gen_sub_pass)"; fi
+         if [[ -n "${nu:-}" || -n "${npw:-}" ]]; then
+           [[ -n "${nu:-}" ]] && SUB_USER="$nu"
+           [[ -n "${npw:-}" ]] && SUB_PASS="$npw"
+           write_sub_env; serve_subs_start
+           echo -e "  ${C_GREEN}已更新:${C_RESET} 账号 ${SUB_USER} / 密码 $(mask_pass "$SUB_PASS")（${#SUB_PASS} 位）"
+           echo -e "  ${C_YELLOW}⚠ 订阅链接/令牌不变；仅影响走 Basic 认证的旧方式${C_RESET}"
+         else
+           info "未修改"
+         fi
          read -rp "回车返回..." _ || true ;;
       7) SUB_PATH="$(gen_sub_path)"; write_sub_env; serve_subs_start; show_subs
          echo -e "  ${C_YELLOW}⚠ 密钥路径已更换，旧订阅链接失效，请到各客户端更新${C_RESET}"
