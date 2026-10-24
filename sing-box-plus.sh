@@ -1345,6 +1345,33 @@ ensure_sub_secrets(){
   return 0
 }
 
+# 重置订阅令牌：换 SUB_SECRET → 重写两份 env → 重生成 systemd/重启 → 重生成链接
+# 影响：所有订阅链接失效（令牌变）+ 面板会话全失效（cookie 签名用它）
+rotate_sub_secret(){
+  mkdir -p "$SB_DIR"
+  local ts; ts="$(date +%Y%m%d_%H%M%S)"
+  cp -a "$SB_DIR/sub.secret.env" "$SB_DIR/sub.secret.env.bak_$ts" 2>/dev/null || true
+  cp -a "$SB_DIR/sub.env" "$SB_DIR/sub.env.bak_$ts" 2>/dev/null || true
+  SUB_SECRET="$(rand_hex 32)"
+  local f="$SB_DIR/sub.secret.env" tmp
+  tmp="$(mktemp "${f}.XXXXXX")"
+  { { [[ -f "$f" ]] && grep -v '^SUB_SECRET=' "$f" || true; }; printf 'SUB_SECRET=%s\n' "$SUB_SECRET"; } > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$f"
+  write_sub_env
+  serve_subs_start >/dev/null 2>&1 || true
+  if systemctl is-active --quiet "${SUB_SERVICE}"; then
+    ok "订阅服务已用新令牌重启"
+  else
+    warn "订阅服务未启动，请查看: journalctl -u ${SUB_SERVICE} -n 50"
+  fi
+  gen_subs 4 >/dev/null 2>&1 || true
+  echo
+  echo -e "  ${C_GREEN}新订阅令牌:${C_RESET} $(sub_token)"
+  echo -e "  ${C_YELLOW}⚠ 旧链接全部失效；面板会话已全部退出，请重新登录${C_RESET}"
+  echo -e "  ${C_YELLOW}⚠ 各客户端需重新导入新链接（菜单 2 可查看）${C_RESET}"
+}
+
 # ---- TLS（真证书）配置：默认关闭，配了才启用 ----
 safe_source_env "$SB_DIR/tls.env" 2>/dev/null || true
 TLS_DOMAIN=${TLS_DOMAIN:-}
@@ -2602,8 +2629,9 @@ sub_menu(){
     echo -e "  ${C_GREEN}4)${C_RESET} 停止订阅服务"
     echo -e "  ${C_GREEN}5)${C_RESET} 修改订阅端口"
     echo -e "  ${C_GREEN}6)${C_RESET} 修改订阅账号密码"
-    echo -e "  ${C_GREEN}7)${C_RESET} 重置密钥路径（换新 token）"
+    echo -e "  ${C_GREEN}7)${C_RESET} 重置密钥路径（换新路径，令牌不变）"
     echo -e "  ${C_GREEN}8)${C_RESET} 更新分流规则库（geosite/geoip）并重生成订阅"
+    echo -e "  ${C_RED}9)${C_RESET} 重置订阅令牌（换 SUB_SECRET，所有链接+会话失效）"
     echo -e "  ${C_RED}0)${C_RESET} 返回主菜单"
     hr
     read -rp "选择: " sop || true
@@ -2627,6 +2655,10 @@ sub_menu(){
          echo -e "  ${C_YELLOW}⚠ 密钥路径已更换，旧订阅链接失效，请到各客户端更新${C_RESET}"
          read -rp "回车返回..." _ || true ;;
       8) FORCE_RULES=1 ensure_rule_files; gen_subs 4; read -rp "回车返回..." _ || true ;;
+      9) warn "重置后：所有订阅链接失效、面板会话全部退出（需重新登录）"
+         read -rp "确认重置订阅令牌? 输入 yes 继续: " cf || true
+         if [[ "${cf:-}" == "yes" ]]; then rotate_sub_secret; else info "已取消"; fi
+         read -rp "回车返回..." _ || true ;;
       0) return 0 ;;
     esac
   done
