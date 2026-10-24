@@ -1939,6 +1939,65 @@ SESSION_TTL = int(os.environ.get('SESSION_TTL', '43200'))   # 12h
 LOG_FILE   = os.environ.get('SUB_LOG', '/var/log/sbp-sub-access.log')
 ALIAS = {'clash': 'clash.yaml', 'singbox': 'singbox.json'}
 
+# ---- 异常访问告警（不依赖外部推送，只落文件；由 NAS 侧采集后推给老大）----
+ALERT_FILE = os.environ.get('SUB_ALERT', '/var/log/sbp-sub-alert.log')
+SEEN_IPS_FILE = os.path.join(SUB_DIR, 'seen_ips.txt')
+_HIT = {}          # ip -> [count, window_start]
+_BAD = {}          # ip -> [count, window_start]
+_ALERTED = set()   # 已报过的 ip（新 IP 频次）
+_ALERTED_BAD = set()
+
+
+def _mask_tok(s: str) -> str:
+    """日志里把令牌打码，避免日志泄漏订阅令牌。"""
+    try:
+        return re.sub(r'/t/[0-9a-f]{32}', '/t/***', s or '')
+    except Exception:
+        return s
+
+
+def _alert(kind, ip, hits, ua=''):
+    try:
+        rec = {'ts': _now(), 'kind': kind, 'ip': ip, 'hits': hits, 'ua': (ua or '')[:120]}
+        with open(ALERT_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+
+
+def _burst(store, alerted, ip, threshold, kind, ua=''):
+    now = _now()
+    st = store.get(ip)
+    if not st or now - st[1] > 600:
+        st = [0, now]
+    st[0] += 1
+    store[ip] = st
+    if st[0] >= threshold and ip not in alerted:
+        alerted.add(ip)
+        _alert(kind, ip, st[0], ua)
+        return True
+    return False
+
+
+def note_token_hit(ip, ua=''):
+    """陌生 IP 在 10 分钟内多次拉订阅 → 告警（同一 IP 只报一次）。"""
+    try:
+        known = set()
+        if os.path.exists(SEEN_IPS_FILE):
+            with open(SEEN_IPS_FILE, 'r', encoding='utf-8') as f:
+                known = {x.strip() for x in f if x.strip()}
+    except Exception:
+        known = set()
+    if ip in known:
+        return
+    if _burst(_HIT, _ALERTED, ip, 5, 'new_ip_burst', ua):
+        try:
+            with open(SEEN_IPS_FILE, 'a', encoding='utf-8') as f:
+                f.write(ip + '\n')
+        except Exception:
+            pass
+
+
 # 失败锁定：ip -> [fail_count, first_fail_ts, locked_until]
 _FAILS = {}
 MAX_FAIL, LOCK_SEC, WINDOW_SEC = 5, 900, 900
@@ -2046,7 +2105,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---------- 工具 ----------
     def log_message(self, fmt, *args):
-        sys.stderr.write('%s - [%s] %s\n' % (self.address_string(), self.log_date_time_string(), fmt % args))
+        try:
+            msg = fmt % args
+        except Exception:
+            msg = str(fmt)
+        sys.stderr.write('%s - [%s] %s\n' % (self.address_string(), self.log_date_time_string(), _mask_tok(msg)))
 
     def _raw_path(self):
         return self.path.split('?', 1)[0]
@@ -2072,9 +2135,11 @@ class Handler(SimpleHTTPRequestHandler):
         m = re.match(r'^/t/([0-9a-f]{32})(?:/(.*))?$', path)
         if m:
             self._tok = bool(hmac.compare_digest(m.group(1), sub_token()))
+            self._tok_bad = not self._tok
             rest = (m.group(2) or '').strip('/')
             return '/' + rest if rest else '/'
         self._tok = False
+        self._tok_bad = False
         return path
 
     def _token_ok(self, internal):
@@ -2113,7 +2178,7 @@ class Handler(SimpleHTTPRequestHandler):
             rec = {
                 'ts': _now(),
                 'ip': self.client_address[0],
-                'path': path,
+                'path': _mask_tok(path),
                 'status': status,
                 'auth': 'session' if authed == 'session' else ('basic' if authed == 'basic' else ('token' if authed == 'token' else 'none')),
                 'ua': (self.headers.get('User-Agent') or '')[:120],
@@ -2205,6 +2270,11 @@ class Handler(SimpleHTTPRequestHandler):
         raw = self._raw_path()
         internal = self._strip_prefix(raw)
 
+        # 令牌猜错：高频尝试 = 扫描器，记告警
+        if getattr(self, '_tok_bad', False):
+            _burst(_BAD, _ALERTED_BAD, self.client_address[0], 10, 'bad_token_burst',
+                   self.headers.get('User-Agent') or '')
+
         # /login —— 登录页（GET 必须自己处理，否则退到静态文件会 404 File not found）
         if internal == '/login':
             self._audit(raw, 200, 'none')
@@ -2275,6 +2345,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         if self._token_ok(internal):
             self._audit(raw, 200, 'token')
+            note_token_hit(self.client_address[0], self.headers.get('User-Agent') or '')
             return self._serve_file(internal)
 
         if self._basic_ok() or self._cookie_ok():
