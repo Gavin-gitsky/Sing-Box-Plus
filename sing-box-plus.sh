@@ -1330,6 +1330,14 @@ ensure_sub_secrets(){
     [[ -n "$s" ]] && SUB_SECRET="$s"
   fi
   [[ -n "$SUB_SECRET" ]] || { SUB_SECRET="$(rand_hex 32)"; changed=1; }
+  # 面板登录凭据也以 sub.secret.env 为准（网页「修改密码」只写该文件）
+  if [[ -f "$SB_DIR/sub.secret.env" ]]; then
+    local pu pp
+    pu="$(grep -E '^PANEL_USER=' "$SB_DIR/sub.secret.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+    pp="$(grep -E '^PANEL_PASS=' "$SB_DIR/sub.secret.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+    [[ -n "$pu" && "$pu" != "$PANEL_USER" ]] && { PANEL_USER="$pu"; changed=1; }
+    [[ -n "$pp" && "$pp" != "$PANEL_PASS" ]] && { PANEL_PASS="$pp"; changed=1; }
+  fi
   # 面板登录凭据（独立于订阅 Basic，改它不影响客户端）
   [[ -n "$PANEL_USER" ]] || { PANEL_USER="gavin"; changed=1; }
   [[ -n "$PANEL_PASS" ]] || { PANEL_PASS="$(gen_sub_pass)"; changed=1; }
@@ -1372,8 +1380,38 @@ rotate_sub_secret(){
   echo -e "  ${C_YELLOW}⚠ 各客户端需重新导入新链接（菜单 2 可查看）${C_RESET}"
 }
 
-# ---- TLS（真证书）配置：默认关闭，配了才启用 ----
-safe_source_env "$SB_DIR/tls.env" 2>/dev/null || true
+# 修改面板登录凭据（与订阅 Basic 完全无关）
+# 写入两处：sub.secret.env（服务端实际读）+ sub.env（脚本变量源），并 bump PANEL_PWD_TS 让旧会话全失效
+set_panel_password(){
+  local nu="$1" npw="$2"
+  [[ -n "$nu" ]] && PANEL_USER="$nu"
+  if [[ -z "$npw" ]]; then npw="$(gen_sub_pass)"; fi
+  if [[ ${#npw} -lt 8 ]]; then warn "密码太短（至少 8 位），已取消"; return 1; fi
+  PANEL_PASS="$npw"
+  mkdir -p "$SB_DIR"
+  local ts; ts="$(date +%Y%m%d_%H%M%S)"
+  cp -a "$SB_DIR/sub.secret.env" "$SB_DIR/sub.secret.env.bak_$ts" 2>/dev/null || true
+  local f="$SB_DIR/sub.secret.env" tmp
+  tmp="$(mktemp "${f}.XXXXXX")"
+  { { [[ -f "$f" ]] && grep -v -E '^(PANEL_USER|PANEL_PASS|PANEL_PWD_TS)=' "$f" || true; }
+    printf 'PANEL_USER=%s\nPANEL_PASS=%s\nPANEL_PWD_TS=%s\n' "$PANEL_USER" "$PANEL_PASS" "$(date +%s)"; } > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$f"
+  write_sub_env
+  serve_subs_start >/dev/null 2>&1 || true
+  if systemctl is-active --quiet "${SUB_SERVICE}"; then
+    ok "面板登录凭据已更新，服务已重启"
+  else
+    warn "服务未启动，请查看: journalctl -u ${SUB_SERVICE} -n 50"
+  fi
+  echo
+  echo -e "  ${C_GREEN}面板账号:${C_RESET} ${PANEL_USER}"
+  echo -e "  ${C_GREEN}面板密码:${C_RESET} 已设置（${#PANEL_PASS} 位，不回显）"
+  echo -e "  ${C_YELLOW}⚠ 所有面板会话已失效，请重新登录聚合页${C_RESET}"
+  echo -e "  ${C_YELLOW}⚠ 与订阅 Basic 无关，客户端订阅不受影响${C_RESET}"
+}
+
+# ---- TLS（真证书）配置：默认关闭，配了才启用 ----safe_source_env "$SB_DIR/tls.env" 2>/dev/null || true
 TLS_DOMAIN=${TLS_DOMAIN:-}
 TLS_EMAIL=${TLS_EMAIL:-}
 TLS_CF_TOKEN=${TLS_CF_TOKEN:-}
@@ -2632,6 +2670,7 @@ sub_menu(){
     echo -e "  ${C_GREEN}7)${C_RESET} 重置密钥路径（换新路径，令牌不变）"
     echo -e "  ${C_GREEN}8)${C_RESET} 更新分流规则库（geosite/geoip）并重生成订阅"
     echo -e "  ${C_RED}9)${C_RESET} 重置订阅令牌（换 SUB_SECRET，所有链接+会话失效）"
+    echo -e "  ${C_RED}10)${C_RESET} 修改面板登录密码（与订阅 Basic 无关）"
     echo -e "  ${C_RED}0)${C_RESET} 返回主菜单"
     hr
     read -rp "选择: " sop || true
@@ -2659,6 +2698,10 @@ sub_menu(){
          read -rp "确认重置订阅令牌? 输入 yes 继续: " cf || true
          if [[ "${cf:-}" == "yes" ]]; then rotate_sub_secret; else info "已取消"; fi
          read -rp "回车返回..." _ || true ;;
+      10) read -rp "面板账号(回车保留 ${PANEL_USER:-gavin}): " nu || true
+          read -rsp "新密码(回车=随机16位，需≥8位): " npw || true; echo
+          set_panel_password "$nu" "$npw"
+          read -rp "回车返回..." _ || true ;;
       0) return 0 ;;
     esac
   done
