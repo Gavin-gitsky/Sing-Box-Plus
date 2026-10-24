@@ -1892,7 +1892,27 @@ SUB_SECRET = os.environ.get('SUB_SECRET', '') or (SUB_PASS + '|sbp-session')
 PANEL_USER = os.environ.get('PANEL_USER', '') or SUB_USER
 PANEL_PASS = os.environ.get('PANEL_PASS', '') or SUB_PASS
 ENV_FILE  = os.environ.get('SUB_ENV_FILE', '/opt/sing-box/sub.secret.env')
-SESSION_EPOCH = int(os.environ.get('PANEL_PWD_TS', '0') or 0)
+
+
+def load_epoch() -> int:
+    """会话代次：优先读 ENV_FILE 里的 PANEL_PWD_TS（持久化，重启不回滚）。"""
+    v = 0
+    try:
+        v = int(os.environ.get('PANEL_PWD_TS', '0') or 0)
+    except Exception:
+        v = 0
+    try:
+        if os.path.exists(ENV_FILE):
+            with open(ENV_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.startswith('PANEL_PWD_TS='):
+                        v = int(line.split('=', 1)[1].strip() or 0)
+    except Exception:
+        pass
+    return v
+
+
+SESSION_EPOCH = load_epoch()
 SESSION_TTL = int(os.environ.get('SESSION_TTL', '43200'))   # 12h
 LOG_FILE   = os.environ.get('SUB_LOG', '/var/log/sbp-sub-access.log')
 ALIAS = {'clash': 'clash.yaml', 'singbox': 'singbox.json'}
@@ -1966,6 +1986,26 @@ def check_session(tok: str) -> bool:
         if not hmac.compare_digest(_sign(payload), sig):
             return False
         return int(exp_s) > _now() and int(epoch) == SESSION_EPOCH
+    except Exception:
+        return False
+
+
+def bump_epoch() -> bool:
+    """作废所有既有会话（退出登录 / 改密后调用），并持久化防重启回滚。"""
+    global SESSION_EPOCH
+    SESSION_EPOCH = _now()
+    try:
+        lines = []
+        if os.path.exists(ENV_FILE):
+            with open(ENV_FILE, 'r', encoding='utf-8') as f:
+                lines = [l for l in f.read().splitlines() if not l.startswith('PANEL_PWD_TS=')]
+        lines.append('PANEL_PWD_TS=%d' % SESSION_EPOCH)
+        tmp = ENV_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ENV_FILE)
+        return True
     except Exception:
         return False
 
@@ -2128,11 +2168,12 @@ class Handler(SimpleHTTPRequestHandler):
             self._audit(raw, 200, 'session')
             return self._send_html(200, self._pwd_page())
 
-        # /logout
+        # /logout —— 立即吊销全部会话（含其它设备/被拷走的 Cookie），并清本地 Cookie
         if internal == '/logout':
-            self._audit(raw, 302, 'session')
+            bump_epoch()
+            self._audit(raw, 302, 'logout')
             self.send_response(302)
-            self.send_header('Location', ('/' + SUB_PATH + '/') if SUB_PATH else '/')
+            self.send_header('Location', ('/' + SUB_PATH + '/login') if SUB_PATH else '/login')
             self.send_header('Set-Cookie', 'sbp_sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax')
             self.send_header('Content-Length', '0')
             self._headers()
