@@ -2025,14 +2025,21 @@ class Handler(SimpleHTTPRequestHandler):
         return self.path.split('?', 1)[0]
 
     def _strip_prefix(self, path):
-        """去掉 /<SUB_PATH> 前缀，返回站内路径；不在前缀下返回 None。"""
+        """去掉 /<SUB_PATH> 前缀，返回站内路径；不在前缀下返回 None。
+
+        容错：旧缓存页可能会拼出双层前缀（/tok/tok/xxx），重复剥。
+        """
         if not SUB_PATH:
             return path
-        if path == '/' + SUB_PATH or path == '/' + SUB_PATH + '/':
-            return '/'
-        if path.startswith('/' + SUB_PATH + '/'):
-            return path[len(SUB_PATH) + 1:]
-        return None
+        pre = '/' + SUB_PATH
+        path = path.split('?', 1)[0]
+        hit = False
+        while path == pre or path.startswith(pre + '/'):
+            hit = True
+            path = path[len(pre):] or '/'
+            if not path.startswith('/'):
+                path = '/' + path
+        return path if hit else None
 
     def _basic_ok(self):
         if not SUB_USER and not SUB_PASS:
@@ -2069,6 +2076,21 @@ class Handler(SimpleHTTPRequestHandler):
                 f.write(json.dumps(rec, ensure_ascii=False) + '\n')
         except Exception:
             pass
+
+    def send_header(self, keyword, value):
+        if keyword.lower() == 'cache-control':
+            self._cc_sent = True
+        return super().send_header(keyword, value)
+
+    def end_headers(self):
+        # 静态文件（index.html 等）也要 no-store：页面会随时重新生成，不能被浏览器缓存住
+        if not getattr(self, '_cc_sent', False):
+            try:
+                super().send_header('Cache-Control', 'no-store')
+            except Exception:
+                pass
+        self._cc_sent = False
+        return super().end_headers()
 
     def _headers(self):
         self.send_header('Referrer-Policy', 'no-referrer')
@@ -2136,6 +2158,11 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         raw = self._raw_path()
         internal = self._strip_prefix(raw)
+
+        # /login —— 登录页（GET 必须自己处理，否则退到静态文件会 404 File not found）
+        if internal == '/login':
+            self._audit(raw, 200, 'none')
+            return self._send_html(200, self._login_page())
 
         # /admin/access —— 审计（需会话或 Basic）
         if internal == '/admin/access':
