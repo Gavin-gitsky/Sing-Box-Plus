@@ -1286,7 +1286,8 @@ SUB_PATH=${SUB_PATH:-}
 
 # ---- 订阅访问凭据 / 密钥路径 ----
 rand_hex(){ if command -v openssl >/dev/null 2>&1; then openssl rand -hex "$1"; else head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; fi; }
-gen_sub_pass(){ tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16; }
+# 注意：本脚本是 set -Eeuo pipefail，`tr </dev/urandom | head -c N` 会让 tr 吃 SIGPIPE(141) 整脚本退出
+gen_sub_pass(){ if command -v openssl >/dev/null 2>&1; then openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-16; else head -c 1024 /dev/urandom | tr -dc 'A-Za-z0-9' | cut -c1-16; fi; }
 gen_sub_path(){ rand_hex 16; }
 gen_sub_user(){ printf 'u%s' "$(rand_hex 4)"; }
 # 打印订阅 Basic 凭据 + 完整链接（终端现场可见，勿截图外传）
